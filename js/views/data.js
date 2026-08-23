@@ -227,7 +227,7 @@ function renderDualBarChart(labels, currVals, prevVals, barClass, fmt, curLabel 
 // 近 N 天趋势折线图（纯 SVG 自绘，零依赖）
 // points: [{date:'YYYY-MM-DD', value:number}] 按日期升序
 // 返回 SVG 折线 + 结束值标注；数据不足 2 天时返回空；onClick=全局函数名（点击数据点跳转，如跳发布日历）
-function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, height = 160, onClick = null, label = '总播放' } = {}) {
+function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, height = 160, onClick = null, label = '总播放', prevAvg = null } = {}) {
   const data = points.filter(p => p && p.value !== undefined && p.value !== null);
   if (data.length < 2) {
     if (data.length === 1) {
@@ -258,13 +258,24 @@ function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, hei
   const labels = labelIdxs.map(i => pts[i]);
   const last = pts[pts.length-1];
   const first = pts[0];
-  const rise = last.value - first.value;
-  const risePct = first.value > 0 ? Math.round(rise / first.value * 100) : 0;
-  const trendBadge = rise > 0
-    ? `<span class="trend-up">▲ ${fmt(Math.abs(rise))} (+${risePct}%)</span>`
-    : rise < 0
-      ? `<span class="trend-down">▼ ${fmt(Math.abs(rise))} (${risePct}%)</span>`
-      : `<span class="trend-flat">— 持平</span>`;
+  // 较上周期日均对比（prevAvg 由调用方传入）
+  const curAvg = data.reduce((s, d) => s + d.value, 0) / data.length;
+  let trendBadge = '';
+  if (prevAvg === null) {
+    // 无上期数据：仅显示本期日均
+    trendBadge = `<span class="trend-flat">日均 ${fmt(Math.round(curAvg))}</span>`;
+  } else if (!prevAvg && curAvg > 0) {
+    trendBadge = `<span class="trend-up">▲ 新增</span>`;
+  } else if (prevAvg && !curAvg) {
+    trendBadge = `<span class="trend-down">▼ -100%</span>`;
+  } else if (prevAvg) {
+    const risePct = Math.round((curAvg - prevAvg) / prevAvg * 100);
+    if (risePct > 0) trendBadge = `<span class="trend-up">▲ +${risePct}%</span>`;
+    else if (risePct < 0) trendBadge = `<span class="trend-down">▼ ${risePct}%</span>`;
+    else trendBadge = `<span class="trend-flat">— 持平</span>`;
+  } else {
+    trendBadge = `<span class="trend-flat">— 持平</span>`;
+  }
   // 数值标注：局部峰值点（比左右都高）+ 最后一点；峰值过多时取最高的 5 个
   const peakIdxs = [];
   for (let i = 1; i < data.length - 1; i++) {
@@ -321,6 +332,18 @@ function renderChartLegend(barClass, curLabel, prevLabel) {
   </div>`;
 }
 
+// 环比增长标签：绿色（增长）/ 红色（下降），显示百分比；本期或上期为 0 时不显示
+function renderGrowthTag(cur, prev) {
+  if (!prev && !cur) return '';
+  if (!prev) return cur > 0 ? '<span class="stat-change up">新增</span>' : '';
+  if (!cur) return prev > 0 ? '<span class="stat-change down">-100%</span>' : '';
+  const pct = ((cur - prev) / prev) * 100;
+  if (pct === 0) return '<span class="stat-change flat">0%</span>';
+  const cls = pct > 0 ? 'up' : 'down';
+  const sign = pct > 0 ? '+' : '';
+  return '<span class="stat-change ' + cls + '">' + sign + Math.round(pct) + '%</span>';
+}
+
 // --- Video data（仅统计展示）---
 function renderVideoData(period) {
   const ranges = getPeriodRanges(period || 'month');
@@ -336,16 +359,23 @@ function renderVideoData(period) {
   const totalComments = currStats.reduce((sum, s) => sum + (s.comments || 0), 0);
   const totalFavorites = currStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
   const totalFollowers = currStats.reduce((sum, s) => sum + (s.followers || 0), 0);
+  // 上一周期对比值（环比基数）
+  const prevCount = contents.filter(c => byPf(c) && c.createdAt >= ranges.prevStart && c.createdAt <= ranges.prevEnd).length;
+  const prevViews = prevStats.reduce((sum, s) => sum + (s.views || 0), 0);
+  const prevLikes = prevStats.reduce((sum, s) => sum + (s.likes || 0), 0);
+  const prevComments = prevStats.reduce((sum, s) => sum + (s.comments || 0), 0);
+  const prevFavorites = prevStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const prevFollowers = prevStats.reduce((sum, s) => sum + (s.followers || 0), 0);
   const titleSuffix = pf ? ' · ' + pf : '';
 
   let html = `<div class="card"><div class="card-title">短视频平台${ranges.label}数据${titleSuffix} <span class="badge">${ranges.start} ~ ${ranges.end}</span></div>
     <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">${totalCount}</div><div class="stat-label">总发布数</div></div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalViews)}</div><div class="stat-label">总播放量</div></div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalLikes)}</div><div class="stat-label">总点赞</div></div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalComments)}</div><div class="stat-label">总评论</div></div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalFavorites)}</div><div class="stat-label">总收藏</div></div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalFollowers)}</div><div class="stat-label">总涨粉</div></div>
+      <div class="stat-card"><div class="stat-value">${totalCount}</div><div class="stat-label">总发布数</div>${renderGrowthTag(totalCount, prevCount)}</div>
+      <div class="stat-card"><div class="stat-value">${formatNum(totalViews)}</div><div class="stat-label">总播放量</div>${renderGrowthTag(totalViews, prevViews)}</div>
+      <div class="stat-card"><div class="stat-value">${formatNum(totalLikes)}</div><div class="stat-label">总点赞</div>${renderGrowthTag(totalLikes, prevLikes)}</div>
+      <div class="stat-card"><div class="stat-value">${formatNum(totalComments)}</div><div class="stat-label">总评论</div>${renderGrowthTag(totalComments, prevComments)}</div>
+      <div class="stat-card"><div class="stat-value">${formatNum(totalFavorites)}</div><div class="stat-label">总收藏</div>${renderGrowthTag(totalFavorites, prevFavorites)}</div>
+      <div class="stat-card"><div class="stat-value">${formatNum(totalFollowers)}</div><div class="stat-label">总涨粉</div>${renderGrowthTag(totalFollowers, prevFollowers)}</div>
     </div></div>`;
 
   // Bar chart（当前周期 vs 上期双柱对比）
@@ -386,7 +416,13 @@ function renderVideoData(period) {
   // 周模式窗口=本周一~周日（与周期范围一致，含未来日期补零，确保始终渲染7点折线）
   const trendEnd = isWeek ? new Date(ranges.end + 'T00:00:00') : new Date();
   const trendPts = aggregateDaily(stats.filter(s => byPf(s)), s => s.views || 0, trendDays, trendEnd);
-  html += `<div class="card"><div class="card-title">${trendTitle} <span class="badge">${isWeek ? '本周' : '近30天'} · ${pf || '4平台合计'} · 点击数据点跳转当日</span></div>${renderTrendLine(trendPts, { color: '#fb923c', onClick: 'goCalendarDate' })}</div>`;
+  // 上一周期日均（用于趋势图环比标签）
+  const prevTrendEnd = new Date(trendEnd);
+  prevTrendEnd.setDate(prevTrendEnd.getDate() - trendDays);
+  const prevTrendPts = aggregateDaily(stats.filter(s => byPf(s)), s => s.views || 0, trendDays, prevTrendEnd);
+  const prevDailyAvg = prevTrendPts.length ? Math.round(prevTrendPts.reduce((s, p) => s + p.value, 0) / prevTrendPts.length) : 0;
+  const trendLabel = isWeek ? '较上周日均' : '较上月日均';
+  html += `<div class="card"><div class="card-title">${trendTitle} <span class="badge">${isWeek ? '本周' : '近30天'} · ${pf || '4平台合计'} · ${trendLabel} · 点击数据点跳转当日</span></div>${renderTrendLine(trendPts, { color: '#fb923c', onClick: 'goCalendarDate', prevAvg: prevDailyAvg || null })}</div>`;
 
   // 未关联记录（录了数据但找不到对应内容）— 折叠面板
   const orphanStats = [...currStats].filter(s => findLinkedTitle(s, 'video') === null).sort((a,b) => b.date.localeCompare(a.date));  html += `<div class="card"><div class="card-title">未关联记录 <span class="badge">${orphanStats.length}</span></div>`;

@@ -164,22 +164,27 @@ a { color: var(--accent); text-decoration: none; }
 }
 .nav-tab.active::after { content: none; }
 
-/* AI 功能按钮：位于导航栏最右（标签之后），同一行，胶囊外观 */
+/* AI 功能按钮：位于导航栏最右（标签之后），默认仅描边，与其他标签一致点击后填充 */
 .ws-ai-btn {
   flex: 0 0 auto;
   margin-left: 4px;
   padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent-ink);
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--accent);
+  background: transparent;
   border: 1px solid var(--accent);
   border-radius: 18px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.25s var(--ease);
+  transition: color 0.25s var(--ease), background 0.25s var(--ease), border-color 0.25s var(--ease);
 }
-.ws-ai-btn:hover { filter: brightness(1.08); }
+.ws-ai-btn:hover { color: var(--text); background: var(--card2); border-color: var(--accent); }
+.ws-ai-btn.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
 
 .backup-bar {
   display: flex;
@@ -776,6 +781,16 @@ a { color: var(--accent); text-decoration: none; }
   font-variant-numeric: tabular-nums;  /* 保持数字等宽对齐，但字体与整体统一（继承 sans） */
 }
 .stat-card .stat-label { font-size: 11px; color: var(--text2); margin-top: 5px; letter-spacing: 0.3px; }
+.stat-change {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 3px;
+  letter-spacing: 0.3px;
+}
+.stat-change.up { color: #16a34a; }
+.stat-change.down { color: #dc2626; }
+.stat-change.flat { color: var(--text3); }
 
 /* Data Table */
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }

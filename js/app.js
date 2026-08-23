@@ -1,12 +1,15 @@
 // ===== 渲染入口 =====
 function render() {
   // AI 配置与功能：独立页面，任何导航 tab 下都渲染配置页
+  const aiBtn = document.getElementById('wsAiBtn');
   if (workspace === 'llm') {
     document.getElementById('mainContent').innerHTML = renderLLMConfig();
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', false));
+    if (aiBtn) aiBtn.classList.add('active');
     if (window.pingService) window.pingService(true);
     return;
   }
+  if (aiBtn) aiBtn.classList.remove('active');
   const html = {
     today: renderToday,
     calendar: renderCalendar,
