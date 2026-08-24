@@ -513,8 +513,8 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 10px; color: var(--text3); transition: transform 0.2s var(--ease);
 }
 .content-fold-body { padding: 0 12px 12px; }
-/* AI 大模型配置卡收起/展开箭头：胶囊圆底 + 同一箭头旋转区分状态（收起=右转90°，展开=▼），更醒目 */
-#llmConfigToggle {
+/* AI 大模型配置卡 / 解析数据表格卡 收起展开箭头：胶囊圆底 + 同一箭头旋转区分状态（收起=右转90°，展开=▼），更醒目 */
+#llmConfigToggle, #parserToggle {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border-radius: 50%;
   font-size: 12px; color: var(--accent);
@@ -522,8 +522,8 @@ a { color: var(--accent); text-decoration: none; }
   box-shadow: var(--shadow-sm);
   transition: transform 0.25s var(--ease), background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
 }
-#llmConfigToggle:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-#llmConfigToggle.collapsed { transform: rotate(-90deg); }
+#llmConfigToggle:hover, #parserToggle:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+#llmConfigToggle.collapsed, #parserToggle.collapsed { transform: rotate(-90deg); }
 
 /* Buttons — 统一尺寸，状态切换不跳动 */
 .btn-done, .btn-check-done {
@@ -600,6 +600,17 @@ a { color: var(--accent); text-decoration: none; }
 .platform-row-name { font-size: 14px; font-weight: 600; }
 .platform-row-stat { font-size: 11px; color: var(--text2); margin-top: 2px; }
 .platform-row-btn { flex-shrink: 0; }
+/* 发布明细进度条：入场由 animateChartBars 从 0 填充到 data-w */
+.pbar-track { height: 5px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.pbar {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--video-orange), var(--video-orange-light));
+  border-radius: 3px;
+  transition: width 0.6s var(--ease);
+}
+.platform-row:nth-child(2) .pbar { transition-delay: 0.08s; }
+.platform-row:nth-child(3) .pbar { transition-delay: 0.16s; }
+.platform-row:nth-child(4) .pbar { transition-delay: 0.24s; }
 
 /* Calendar */
 .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
@@ -781,6 +792,18 @@ a { color: var(--accent); text-decoration: none; }
   font-variant-numeric: tabular-nums;  /* 保持数字等宽对齐，但字体与整体统一（继承 sans） */
 }
 .stat-card .stat-label { font-size: 11px; color: var(--text2); margin-top: 5px; letter-spacing: 0.3px; }
+/* 数字卡片入场：淡入上浮，逐卡错峰（fill backwards：延迟期隐藏，结束后不锁态，hover 上浮仍可用） */
+@keyframes mbwRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.stats-grid .stat-card { animation: mbwRise 0.4s var(--ease) backwards; }
+.stats-grid .stat-card:nth-child(2) { animation-delay: 0.05s; }
+.stats-grid .stat-card:nth-child(3) { animation-delay: 0.10s; }
+.stats-grid .stat-card:nth-child(4) { animation-delay: 0.15s; }
+.stats-grid .stat-card:nth-child(5) { animation-delay: 0.20s; }
+.stats-grid .stat-card:nth-child(6) { animation-delay: 0.25s; }
+.platform-rows .platform-row { animation: mbwRise 0.4s var(--ease) backwards; }
+.platform-rows .platform-row:nth-child(2) { animation-delay: 0.06s; }
+.platform-rows .platform-row:nth-child(3) { animation-delay: 0.12s; }
+.platform-rows .platform-row:nth-child(4) { animation-delay: 0.18s; }
 .stat-change {
   display: inline-block;
   font-size: 11px;
@@ -860,6 +883,15 @@ a { color: var(--accent); text-decoration: none; }
 .chart-legend .legend-dot.ok { background: var(--green); }
 .chart-legend .legend-dot.nok { background: var(--red); }
 
+/* 饼图入场：整体从中心平面缩放展开（无扭曲） */
+.pie-content {
+  transform: scale(0);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.pie-content.pie-expanded { transform: scale(1); }
+
 /* 趋势折线图 */
 .trend-box { padding: 6px 0 2px; }
 .trend-svg { width: 100%; height: 180px; display: block; }
@@ -868,6 +900,8 @@ a { color: var(--accent); text-decoration: none; }
   margin-bottom: 8px; flex-wrap: wrap; gap: 4px;
 }
 .trend-label { font-size: 12px; color: var(--text3); }
+.trend-compare-group { display: inline-flex; align-items: center; gap: 5px; }
+.trend-compare-label { font-size: 12px; color: var(--text2); }
 .trend-up { font-size: 12px; color: var(--green); font-weight: 600; }
 .trend-down { font-size: 12px; color: var(--red); font-weight: 600; }
 .trend-flat { font-size: 12px; color: var(--text2); font-weight: 600; }
@@ -1377,9 +1411,26 @@ a { color: var(--accent); text-decoration: none; }
 .filter-select:hover { border-color: var(--accent); color: var(--text); }
 .filter-select:focus { border-color: var(--accent); }
 
-/* 折线图数据点：hover 高亮反馈（与柱形图 title 同机制，补充视觉提示） */
-.trend-svg circle { cursor: pointer; transition: r .12s ease, stroke-width .12s ease, fill-opacity .12s ease; }
-.trend-svg circle:hover { r: 8; fill-opacity: 1; stroke: var(--text); stroke-width: 2.5; }
+/* 折线图数据点：可见点（.trend-dot）hover/悬停高亮；透明 hit 圆（.trend-hit）负责触发提示框，不参与视觉变化 */
+.trend-wrap { position: relative; }
+.trend-svg text { pointer-events: none; }
+.trend-hit { cursor: pointer; }
+.trend-dot { transition: r .12s ease, stroke-width .12s ease, fill-opacity .12s ease; }
+.trend-dot:hover, .trend-dot.hot { r: 8; fill-opacity: 1; stroke: var(--text); stroke-width: 2.5; }
+/* 悬停竖向参考线（虚线，指向当前数据点） */
+.trend-guide { stroke: var(--text3); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0; transition: opacity 0.15s ease; pointer-events: none; }
+.trend-guide.show { opacity: 0.6; }
+/* 悬停提示框：小框显示具体日期与数据（定位于数据点上方，跟随滑动） */
+.trend-tip {
+  position: absolute; z-index: 6; pointer-events: none; white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 12px));
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: 8px;
+  box-shadow: var(--shadow-sm); padding: 6px 10px;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.trend-tip.show { opacity: 1; }
+.trend-tip-date { font-size: 11px; color: var(--text3); }
+.trend-tip-val { font-size: 12px; font-weight: 600; color: var(--text); margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 /* 内容登记搜索：手动触发按钮（回车/点击搜索，不随输入实时搜） */
 .search-box .search-btn {

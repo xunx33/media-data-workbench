@@ -25,11 +25,11 @@ function applyLlmConfigFold() {
   }
 }
 
-// AI 视频文案专家 / AI 数据分析专家 / AI 文生视频专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
+// AI 视频文案专家 / AI 数据分析专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
 const LLM_DAILY_LIMIT = 20;   // 每类每日上限
 const LLM_MAX_CHARS = 3000;   // 单条消息最大字数
 
-let __llmQuota = { date: '', chat: 0, review: 0, video: 0 };
+let __llmQuota = { date: '', chat: 0, review: 0 };
 let __llmQuotaLoaded = false;
 
 async function loadLlmQuota() {
@@ -41,22 +41,19 @@ async function loadLlmQuota() {
       __llmQuota = {
         date: q.date,
         chat: typeof q.chat === 'number' ? q.chat : (q.count || 0),
-        review: typeof q.review === 'number' ? q.review : (q.geo || 0),
-        video: typeof q.video === 'number' ? q.video : 0
+        review: typeof q.review === 'number' ? q.review : (q.geo || 0)
       };
     } else {
-      __llmQuota = { date: d, chat: 0, review: 0, video: 0 };
+      __llmQuota = { date: d, chat: 0, review: 0 };
     }
-    if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0, video: 0 };   // 跨天重置
+    if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };   // 跨天重置
   } catch (e) {
-    __llmQuota = { date: d, chat: 0, review: 0, video: 0 };
+    __llmQuota = { date: d, chat: 0, review: 0 };
   }
   __llmQuotaLoaded = true;
 }
 function __quotaKey(type) {
-  if (type === 'review') return 'review';
-  if (type === 'video') return 'video';
-  return 'chat';
+  return type === 'review' ? 'review' : 'chat';
 }
 // 未加载完成前返回满额（不误伤），渲染后的下一次更新会校正
 function llmQuotaRemaining(type) {
@@ -66,7 +63,7 @@ function llmQuotaRemaining(type) {
 async function llmQuotaConsume(type) {
   const d = getToday();
   const key = __quotaKey(type);
-  if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0, video: 0 };
+  if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };
   __llmQuota[key]++;
   await saveData('llmQuota', __llmQuota);
   return llmQuotaRemaining(type);
@@ -144,7 +141,6 @@ function renderLLMConfig() {
       </div>
     </div>
     ${renderAiVideoCopyCard()}
-    ${renderAiVideoPromptCard()}
     ${renderAiReviewCard()}
   </div>`;
 }
@@ -199,10 +195,11 @@ function clearLLMConfig() {
   });
 }
 
-// ===== 底层请求：OpenAI 兼容 chat/completions =====
+// ===== 底层请求：OpenAI 兼容 chat/completions（经本地服务器 /api/llm/chat 代理转发）=====
+// 前端直连会被浏览器跨域（CORS）拦截：千问 token-plan 专属域名（token-plan.*.maas.aliyuncs.com）
+// 等不返回 CORS 响应头，浏览器直接 fetch 会报 Failed to fetch；改由本地 Node 服务端转发即可绕过。
 async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
-  const url = String(baseUrl).replace(/\/+$/, '') + '/chat/completions';
-  const body = { model: model, messages: messages };
+  const body = { baseUrl: String(baseUrl).replace(/\/+$/, ''), apiKey: apiKey, model: model, messages: messages };
   // temperature 仅在校验通过（0~2 数字）时透传；未填/无效则不传，避免部分服务端报错
   if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
     body.temperature = Number(temperature);
@@ -210,13 +207,12 @@ async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
   const opts = {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + apiKey
+      'Content-Type': 'application/json'
     },
     body: JSON.stringify(body)
   };
   if (signal) opts.signal = signal;
-  const res = await fetch(url, opts);
+  const res = await fetch('/api/llm/chat', opts);
   if (!res.ok) {
     let detail = '';
     try { const j = await res.json(); detail = j && j.error && j.error.message ? '：' + j.error.message : ''; } catch (e) {}
@@ -368,13 +364,13 @@ function renderAiReviewCard() {
         </div>
       </div>
       <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span></div>
+        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span>${aiReviewReply() ? aiReviewHeadButtons() : ''}</div>
         <div class="ai-result-panel" id="overviewAiOutput">${
           isRunning
             ? '<div class="llm-loading"><span>正在按「' + escapeHtml(getAiReviewRange().label) + '」对视频平台进行 AI 数据分析...</span><span class="llm-loading-hint">预计需要1-3分钟（内容量大小），请稍候。</span></div>'
             : aiReviewReply()
-              ? '<pre class="llm-reply">' + escapeHtml(aiReviewReply()) + '</pre>' + aiReviewReplyButtons()
-              : (configured ? '<div class="ai-panel-empty">AI 数据分析专家结果将显示在这里<br>完成后可一键网页直开报表</div>' : '<div class="llm-error">尚未配置大模型，请先在上方填写并保存。</div>')
+              ? '<pre class="llm-reply">' + escapeHtml(aiReviewReply()) + '</pre>'
+              : (configured ? '<div class="ai-panel-empty">AI 数据分析专家结果将显示在这里<br>完成后可一键导出 HTML 报表</div>' : '<div class="llm-error">尚未配置大模型，请先在上方填写并保存。</div>')
         }</div>
       </div>
     </div>`;
@@ -442,10 +438,10 @@ let __aiReviewCompleted = false;   // 本次分析是否已拿到结果（已完
 // AI 数据分析专家结果
 const __aiReviewReplies = {};
 function aiReviewReply() { return __aiReviewReplies['video'] || ''; }
-function aiReviewReplyButtons() {
-  return '<div style="margin-top:10px;text-align:right;display:flex;justify-content:flex-end;gap:8px;">' +
-    '<button class="btn-danger" onclick="clearAiReviewReply()" style="font-size:12px;padding:6px 14px;cursor:pointer;">清空结果</button>' +
-    '<button class="btn-save" onclick="exportAiAnalysisToHtml()" style="font-size:12px;padding:6px 14px;background:linear-gradient(135deg,var(--green),#10b981);cursor:pointer;">🖨️ HTML 网页直开</button>' +
+function aiReviewHeadButtons() {
+  return '<div style="margin-left:auto;display:flex;gap:6px;">' +
+    '<button class="btn-danger" onclick="clearAiReviewReply()" style="font-size:11px;padding:4px 10px;cursor:pointer;">清空</button>' +
+    '<button class="btn-save" onclick="exportAiAnalysisToHtml()" style="font-size:11px;padding:4px 10px;background:linear-gradient(135deg,var(--green),#10b981);cursor:pointer;">HTML 导出打印</button>' +
     '</div>';
 }
 function clearAiReviewReply() {
@@ -519,10 +515,6 @@ async function runOverviewAiReview() {
     ], __aiReviewController.signal);
     __aiReviewCompleted = true;
     __aiReviewReplies[ws] = reply;
-    // 检查 DOM 是否存在（可能已切换 tab 再切回，元素已重建）
-    if (document.getElementById('overviewAiOutput')) {
-      document.getElementById('overviewAiOutput').innerHTML = '<pre class="llm-reply">' + escapeHtml(reply) + '</pre>' + aiReviewReplyButtons();
-    }
     refreshQuota();
   } catch (e) {
     if (e.name !== 'AbortError') {
@@ -535,11 +527,8 @@ async function runOverviewAiReview() {
   } finally {
     __overviewAiBusy = false;
     __aiReviewController = null;
-    // 仍在总览页时恢复开始按钮（切走则由 render 的 busy 判断处理）
-    const actionsEl2 = document.getElementById('overviewAiActions');
-    if (actionsEl2 && actionsEl2.querySelector('.btn-cancel')) {
-      actionsEl2.innerHTML = '<button class="btn-save" onclick="runOverviewAiReview()">AI 数据分析</button>';
-    }
+    // 重绘页面以刷新结果和标题栏按钮
+    render();
   }
 }
 
@@ -582,10 +571,16 @@ function clearAiCopyResult() {
     okText: '确认清空',
     onOk: async () => {
       __aiCopyResult = null;
-      renderAiCopyResults();
+      render();
       showToast('生成结果已清空');
     }
   });
+}
+
+function aiCopyHeadButtons() {
+  return '<div style="margin-left:auto;display:flex;gap:6px;">' +
+    '<button class="btn-danger" onclick="clearAiCopyResult()" style="font-size:11px;padding:4px 10px;cursor:pointer;">清空</button>' +
+    '</div>';
 }
 
 function renderAiVideoCopyCard() {
@@ -626,7 +621,7 @@ function renderAiVideoCopyCard() {
         </div>
       </div>
       <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span></div>
+        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span>${__aiCopyResult ? aiCopyHeadButtons() : ''}</div>
         <div class="ai-result-panel" id="aiCopyResults">${
           isRunning
             ? '<div class="llm-loading"><span>正在生成文案...</span><span class="llm-loading-hint">预计需要30-60秒，请稍候。</span></div>'
@@ -678,15 +673,8 @@ async function generateAiVideoCopy() {
   
   __aiCopyLoading = false;
   __aiCopyController = null;
-  // 检查 DOM 是否存在（可能已切换 tab 再切回，元素已重建）
-  if (document.getElementById('aiCopyResults')) {
-    renderAiCopyResults();
-  }
-  // 仍在今日页时恢复开始按钮（切走则由 render 的 busy 判断处理）
-  const actionsEl2 = document.getElementById('aiCopyActions');
-  if (actionsEl2 && actionsEl2.querySelector('.btn-cancel')) {
-    actionsEl2.innerHTML = '<button class="btn-save" onclick="generateAiVideoCopy()">AI 生成描述</button>';
-  }
+  // 重绘页面以刷新结果和标题栏按钮
+  render();
   const qEl = document.getElementById('aiCopyQuota');
   if (qEl) qEl.textContent = '今日 AI 视频文案专家剩余 ' + llmQuotaRemaining('chat') + ' 次';
 }
@@ -771,8 +759,6 @@ function buildAiCopyResultsHtml() {
     html += `<div class="ai-copy-item" onclick="copyAiCopyText('${escapeHtml(r.tags).replace(/'/g, "\\'")}')">${escapeHtml(r.tags)}</div>`;
   }
 
-  html += '<div style="margin-top:10px;text-align:right;"><button class="btn-danger" onclick="clearAiCopyResult()" style="font-size:12px;padding:6px 14px;cursor:pointer;">清空结果</button></div>';
-
   return html;
 }
 
@@ -813,221 +799,3 @@ function cancelAiCopy() {
   showToast('已取消生成');
 }
 
-// ===== AI 文生视频专家（生成文生视频画面提示词）=====
-// 角色：资深文生视频提示词工程师兼导演，把画面描述转化为可直接用于文生视频模型的画面提示词
-const VIDEO_GEN_TOOLS = ['Seedance（豆包、即梦）', 'Wan（千问万相）', 'Hailuo（MiniMax）', 'Kling（快手）', 'Sora（OpenAI）', 'Runway', '通用'];
-const VIDEO_GEN_STYLES = ['写实', '电影感', '动漫', '3D', '水墨', '国风', '赛博朋克', '其他'];
-const VIDEO_GEN_DURATIONS = ['5s', '10s', '15s'];
-
-let __aiVpController = null;
-let __aiVpLoading = false;
-let __aiVpResult = null;
-// 表单值记忆：切页/重渲染后保留工具与内容输入
-let __aiVpTool = VIDEO_GEN_TOOLS[VIDEO_GEN_TOOLS.length - 1];  // 默认「通用」
-let __aiVpDesc = '';
-let __aiVpStyle = '';
-let __aiVpDuration = '5s';
-function saveAiVpForm() {
-  const tool = document.getElementById('aiVpTool');
-  const desc = document.getElementById('aiVpDesc');
-  const style = document.getElementById('aiVpStyle');
-  const duration = document.getElementById('aiVpDuration');
-  if (tool) __aiVpTool = tool.value;
-  if (desc) __aiVpDesc = desc.value;
-  if (style) __aiVpStyle = style.value;
-  if (duration) __aiVpDuration = duration.value;
-}
-
-// 系统提示词：精准定义角色与六要素解构能力，并按生成工具/风格/时长微调
-function buildVideoPromptSystemPrompt(tool, style, duration) {
-  const toolNote = {
-    'Seedance（豆包、即梦）': 'Seedance（豆包、即梦）：支持自然语言长描述 + 明确镜头语言，写实与影视感强，鼓励详细的场景与运镜描写。',
-    'Wan（千问万相）': 'Wan（千问万相）：结构化、标签化的画面要素描述更稳，主语+场景+动作+光线清晰分层。',
-    'Hailuo（MiniMax）': 'Hailuo（MiniMax/海螺）：重视电影感与氛围，运镜词（推拉摇移跟）与情绪渲染要具体。',
-    'Kling（快手）': 'Kling（快手/可灵）：自然语言描述为主，人物动作与物理规律要合理，避免超现实变形。',
-    'Sora（OpenAI）': 'Sora（OpenAI）：支持长文本自然语言描述，擅长复杂场景与电影感画面，物理与光影真实；可一次生成多镜头片段，鼓励详细的环境、动作与运镜描写。',
-    'Runway': 'Runway：电影级画质与镜头控制，擅长运动动态与相机语言；以「主体+动作+环境」清晰描述，英文提示词效果最佳。',
-    '通用': '通用写法：兼顾各主流文生视频模型，要素完整、措辞直白、无极端特殊语法。'
-  }[tool] || '';
-  return '你是一名资深文生视频提示词工程师兼影视导演，精通主流文生视频大模型（Seedance/豆包、即梦、Wan/千问万相、Hailuo/MiniMax、Kling/快手、Sora/OpenAI、Runway 等）的提示词写作方法。\n' +
-    '你的任务：把用户提供的画面描述或想法，转化为一段可直接粘贴到文生视频工具里的高质量画面提示词。\n' +
-    '当前生成工具：' + tool + '。' + toolNote + '\n' +
-    '【六要素解构法】写提示词时把画面拆成六个要素逐项落实，缺一不可：\n' +
-    '1. 主体：画面主角是什么（人/物/动物/场景主体），外形、穿着、材质、数量等可成像细节\n' +
-    '2. 场景环境：背景与所处空间（室内/室外、城市/自然、时代氛围），环境的具体特征\n' +
-    '3. 动作动态：主体的运动与状态（用什么动词描述，如"缓缓转身""汽水开盖喷出气泡"），符合物理规律\n' +
-    '4. 镜头运动：镜头语言（固定机位/缓慢推近/环绕/跟随/拉升等），以及景别（特写/近景/中景/远景）\n' +
-    '5. 光影氛围：光线方向、色温、明暗对比、天气/时段，营造的情绪氛围\n' +
-    '6. 风格质感：画面风格（写实/电影感/动漫/3D/水墨/国风/赛博朋克等）与画面质感（胶片颗粒/高清/柔光/景深等）\n' +
-    '【写作原则】\n' +
-    '- 画面描述必须具体、可成像：明确颜色、材质、光线、构图、视角，杜绝"好看""大气"等抽象模糊词\n' +
-    '- 用动词与运动词表达动态，让模型理解画面随时间怎么变化\n' +
-    '- 提示词以中英两种自然语言输出（指出推荐使用哪种语言），段落通顺、可直接整段复制使用\n' +
-    (style && style !== '其他' ? ('- 画面风格锁定为「' + style + '」，在风格要素中给出对应的风格关键词与质感描述\n') : '') +
-    '时长设定：' + (duration || '5s') + '，提示词篇幅必须与时长匹配（中文按字数、英文按单词数），严禁超长：\n' +
-    '- 5s：中文 60-100 字 / 英文 40-70 词；单场景、单镜头为主，画面简洁、动作集中\n' +
-    '- 10s：中文 100-160 字 / 英文 70-110 词；单场景可含 2-3 个镜头/动作，节奏适中\n' +
-    '- 15s：中文 160-260 字 / 英文 110-180 词；可多镜头、有起承转合或镜头切换\n' +
-    '【输出要求】严格按以下结构输出（直接输出纯文本，不要使用任何 markdown 符号如 #、**、*）：\n' +
-    '【中文画面提示词】\n一段中文画面提示词（含六要素，严格控制在上述时长对应的篇幅内，精炼打磨，可直接粘贴到文生视频工具）\n' +
-    '【英文画面提示词】\n一段对应的英文画面提示词（含六要素，严格控制在上述时长对应的篇幅内）\n' +
-    '只输出上述两项内容，删除重复与冗余描述，不要输出其他解释、无关内容或参数建议。';
-}
-
-// 文生视频专家卡片（生成工具 + 风格 + 时长 + 画面描述，右栏结果）
-function renderAiVideoPromptCard() {
-  const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
-  const isRunning = __aiVpLoading && __aiVpController;
-  return `<div class="ai-split">
-      <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 文生视频专家</span>${renderLlmStatusBadge()}</div>
-        <div class="ai-panel-body">
-          <div class="ai-feature-sub">根据画面内容，生成可直接用于文生视频工具的画面提示词</div>
-          <div style="display:flex;gap:10px;">
-            <div class="form-group" style="flex:1;margin-bottom:0;"><label>生成工具</label>
-              <select id="aiVpTool" ${isRunning ? 'disabled' : ''} onchange="saveAiVpForm()">
-                ${VIDEO_GEN_TOOLS.map(t => `<option value="${t}" ${t === __aiVpTool ? 'selected' : ''}>${t}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group" style="flex:1;margin-bottom:0;"><label>风格（可选）</label>
-              <select id="aiVpStyle" ${isRunning ? 'disabled' : ''} onchange="saveAiVpForm()">
-                <option value="">自动判断</option>
-                ${VIDEO_GEN_STYLES.map(s => `<option value="${s}" ${s === __aiVpStyle ? 'selected' : ''}>${s}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group" style="flex:1;margin-bottom:0;"><label>时长</label>
-              <select id="aiVpDuration" ${isRunning ? 'disabled' : ''} onchange="saveAiVpForm()">
-                ${VIDEO_GEN_DURATIONS.map(v => `<option value="${v}" ${v === __aiVpDuration ? 'selected' : ''}>${v}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          <div class="form-group"><label>视频主题 / 画面描述</label>
-            <textarea id="aiVpDesc" rows="3" placeholder="想生成的画面内容：如「夏日汽水开盖瞬间，气泡涌出，清凉水珠飞溅，阳光透过瓶身」" ${isRunning ? 'disabled' : ''} oninput="saveAiVpForm()">${escapeHtml(__aiVpDesc || '')}</textarea>
-          </div>
-          <div class="llm-actions" id="aiVpActions">
-            ${isRunning
-              ? '<button class="btn-cancel" onclick="cancelAiVideoPrompt()">取消</button>'
-              : '<button class="btn-save" onclick="generateAiVideoPrompt()">AI 生成画面提示词</button>'
-            }
-          </div>
-          <div class="llm-chat-quota" id="aiVpQuota">今日 AI 文生视频剩余 ${llmQuotaRemaining('video')} 次</div>
-        </div>
-      </div>
-      <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span></div>
-        <div class="ai-result-panel" id="aiVpResults">${
-          isRunning
-            ? '<div class="llm-loading"><span>正在生成画面提示词...</span><span class="llm-loading-hint">预计需要30-60秒，请稍候。</span></div>'
-            : (__aiVpResult ? buildAiVpResultsHtml() : (!configured ? '<div class="llm-error">尚未配置大模型，请先在上方填写并保存。</div>' : '<div class="ai-panel-empty">生成的中文/英文画面提示词将显示在这里<br>点击即可复制</div>'))
-        }</div>
-      </div>
-    </div>`;
-}
-
-async function generateAiVideoPrompt() {
-  if (__aiVpLoading) return;
-  saveAiVpForm();
-  const desc = (__aiVpDesc || '').trim();
-  if (!desc) { showToast('请输入视频主题 / 画面描述'); return; }
-  const cfg = llmConfig || {};
-  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) { showToast('请先在AI大模型配置栏 配置 模型接口'); return; }
-  if (!__llmQuotaLoaded) await loadLlmQuota();
-  if (llmQuotaRemaining('video') <= 0) { showToast('今日 AI 文生视频额度已用尽，明天再来'); return; }
-
-  __aiVpLoading = true;
-  __aiVpResult = null;
-  __aiVpController = new AbortController();
-  renderAiVpResults();
-  // 在操作区域显示取消按钮
-  const actionsEl = document.getElementById('aiVpActions');
-  if (actionsEl) actionsEl.innerHTML = '<button class="btn-cancel" onclick="cancelAiVideoPrompt()">取消</button>';
-  // 扣减额度（失败时下方 llmQuotaRefund 退还）
-  await llmQuotaConsume('video');
-
-  try {
-    const systemPrompt = buildVideoPromptSystemPrompt(__aiVpTool, __aiVpStyle, __aiVpDuration);
-    const reply = await chatRaw(cfg.baseUrl, cfg.apiKey, cfg.model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: '请为以下内容生成文生视频画面提示词：\n' + desc }
-    ], cfg.temperature, __aiVpController.signal);
-    __aiVpResult = reply;
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      showToast('生成失败：' + e.message);
-      await llmQuotaRefund('video');
-    }
-  }
-
-  __aiVpLoading = false;
-  __aiVpController = null;
-  if (document.getElementById('aiVpResults')) renderAiVpResults();
-  // 恢复开始按钮
-  const actionsEl2 = document.getElementById('aiVpActions');
-  if (actionsEl2 && actionsEl2.querySelector('.btn-cancel')) {
-    actionsEl2.innerHTML = '<button class="btn-save" onclick="generateAiVideoPrompt()">AI 生成画面提示词</button>';
-  }
-  const qEl = document.getElementById('aiVpQuota');
-  if (qEl) qEl.textContent = '今日 AI 文生视频剩余 ' + llmQuotaRemaining('video') + ' 次';
-}
-
-// 解析输出：按「中文画面提示词 / 英文画面提示词」两段拆开；模型未按结构输出时兜底整段
-function parseVideoPromptResult(text) {
-  const r = { zh: '', en: '' };
-  const zhMatch = String(text || '').match(/【中文画面提示词】\s*([\s\S]*?)(?=【英文画面提示词】|$)/i);
-  if (zhMatch) r.zh = zhMatch[1].trim();
-  const enMatch = String(text || '').match(/【英文画面提示词】\s*([\s\S]*?)$/i);
-  if (enMatch) r.en = enMatch[1].trim();
-  return r;
-}
-
-// 点击复制当前项（读取自身文本，避免长文本/换行嵌入 onclick 导致截断）
-function copyAiCopyByEl(el) {
-  copyAiCopyText((el && el.textContent) || '');
-}
-
-function buildAiVpResultsHtml() {
-  if (!__aiVpResult) return '';
-  const r = parseVideoPromptResult(__aiVpResult);
-  let html = '';
-  if (r.zh) {
-    html += '<div style="font-size:12px;color:var(--text3);margin-bottom:6px;font-weight:600;">中文画面提示词（点击复制）</div>';
-    html += `<div class="ai-copy-item" onclick="copyAiCopyByEl(this)">${escapeHtml(r.zh)}</div>`;
-  }
-  if (r.en) {
-    html += '<div style="font-size:12px;color:var(--text3);margin:10px 0 6px;font-weight:600;">英文画面提示词（点击复制）</div>';
-    html += `<div class="ai-copy-item" onclick="copyAiCopyByEl(this)">${escapeHtml(r.en)}</div>`;
-  }
-  if (!r.zh && !r.en) {
-    // 兜底：模型未按结构输出时，整段作为可复制块
-    html += `<div class="ai-copy-item" onclick="copyAiCopyByEl(this)">${escapeHtml(__aiVpResult)}</div>`;
-  }
-  html += '<div style="margin-top:10px;text-align:right;"><button class="btn-danger" onclick="clearAiVideoPromptResult()" style="font-size:12px;padding:6px 14px;cursor:pointer;">清空结果</button></div>';
-  return html;
-}
-
-function renderAiVpResults() {
-  const el = document.getElementById('aiVpResults');
-  if (!el) return;
-  if (__aiVpLoading) {
-    el.innerHTML = '<div class="llm-loading"><span>正在生成画面提示词...</span><span class="llm-loading-hint">预计需要30-60秒，请稍候。</span></div>';
-    return;
-  }
-  el.innerHTML = buildAiVpResultsHtml();
-}
-
-function clearAiVideoPromptResult() {
-  __aiVpResult = null;
-  renderAiVpResults();
-  showToast('结果已清空');
-}
-
-function cancelAiVideoPrompt() {
-  if (__aiVpController) { __aiVpController.abort(); __aiVpController = null; }
-  __aiVpLoading = false;
-  renderAiVpResults();
-  // 恢复开始按钮
-  const actionsEl = document.getElementById('aiVpActions');
-  if (actionsEl) actionsEl.innerHTML = '<button class="btn-save" onclick="generateAiVideoPrompt()">AI 生成画面提示词</button>';
-  showToast('已取消生成');
-}

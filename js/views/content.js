@@ -2,7 +2,8 @@ function renderContent() {
   // 解析数据表格模块（仅视频工作台显示，置于内容登记页最上方）
   let html = renderTableParser();
   const filtered = getFilteredContents();
-  html += `<div class="card"><div class="card-title">内容登记 <span class="badge" id="contentCount">${filtered.length}条</span></div>`;
+  const videoContents = contents.filter(c => isVideo(c.platform)).length;
+  html += `<div class="card"><div class="card-title">内容登记 <span class="badge">已登记 ${videoContents}条 · 已录数据 ${stats.length}条</span></div>`;
   html += `<div class="search-box">
     <span class="search-icon">&#128269;</span>
     <input type="text" id="searchInput" placeholder="搜索标题/选题/平台/链接...（输入后按回车或点搜索）" value="${escapeHtml(searchKeyword)}" onkeydown="if(event.key==='Enter')doSearch()">

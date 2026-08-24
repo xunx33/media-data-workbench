@@ -1,8 +1,13 @@
 function renderToday() {
   const today = getToday();
   const counts = getDayCounts(today);
+  // 标题：日期 + 打卡提醒
+  const todayLabel = (() => {
+    const parts = today.split('-');
+    return parseInt(parts[1]) + '月' + parseInt(parts[2]) + '日';
+  })();
 
-  let html = '<div class="today-section"><h3>今日待办</h3>';
+  let html = `<div class="today-section"><h3>今日待办 <span style="font-size:13px;color:var(--text2);font-weight:500;">${todayLabel} · 今日你登记了吗？</span></h3>`;
 
   html += '<div style="font-size:13px;color:var(--video-orange-light);margin-bottom:6px;font-weight:600;">短视频平台</div><ul class="today-list">';
   VIDEO_PLATFORMS.forEach(p => html += renderPlatformTodayItem(p, counts[p], today, 'video'));
@@ -15,14 +20,16 @@ function renderToday() {
   html += '</div>';
 
   // 今日发布概览（只统计短视频平台）
-  const todayContents = contents.filter(c => c.createdAt === today);
-  const vTotal = todayContents.filter(c => isVideo(c.platform)).length;
-  const videoDone = VIDEO_PLATFORMS.filter(p => todayContents.some(c => c.platform === p)).length;
+  // 两张卡片：今日登记（登记条数）、已录数据（已录入平台数据的条数）
+  const todayContents = contents.filter(c => c.createdAt === today && isVideo(c.platform));
+  const vTotal = todayContents.length;
+  const withData = todayContents.filter(c => stats.some(s =>
+    s.contentId == c.id || s.contentId == Number(c.id) || (s.platform === c.platform && s.date === c.createdAt)
+  )).length;
   html += `<div class="card"><div class="card-title">今日发布概览</div>
     <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">${vTotal}</div><div class="stat-label">短视频条数</div></div>
-      <div class="stat-card"><div class="stat-value">${videoDone}/${VIDEO_PLATFORMS.length}</div><div class="stat-label">视频平台覆盖</div></div>
-      <div class="stat-card"><div class="stat-value">${vTotal}</div><div class="stat-label">今日总登记</div></div>
+      ${statCardHtml(vTotal, '今日登记')}
+      ${statCardHtml(withData, '已录数据')}
     </div></div>`;
 
   return html;

@@ -1,10 +1,21 @@
+// 解析数据表格卡片收起/展开（状态存 localStorage，与 AI 大模型配置卡同款胶囊箭头）
+let __parserCollapsed = (function(){
+  return localStorage.getItem(STORAGE_KEY + 'tableParserCollapsed') === '1';
+})();
+function toggleParserFold() {
+  __parserCollapsed = !__parserCollapsed;
+  localStorage.setItem(STORAGE_KEY + 'tableParserCollapsed', __parserCollapsed ? '1' : '0');
+  const body = document.getElementById('parserFoldBody');
+  const arrow = document.getElementById('parserToggle');
+  if (body) body.style.display = __parserCollapsed ? 'none' : 'block';
+  if (arrow) arrow.classList.toggle('collapsed', __parserCollapsed);
+}
+
 function renderTableParser() {
   // 解析数据表格仅支持短视频平台导出表
   if (workspace !== 'video') return '';
-  const videoCount = stats.length;
-  const videoContents = contents.filter(c => isVideo(c.platform)).length;
-  const missCount = Math.max(videoContents - videoCount, 0);
-  let html = `<div class="card"><div class="card-title">解析数据表格 <span class="badge">视频内容 ${videoContents}条 · 已录数据 ${videoCount}条${missCount > 0 ? ` · 未录 ${missCount}条` : ''}</span></div>`;
+  let html = `<div class="card"><div class="card-title" style="cursor:pointer;" onclick="toggleParserFold()">解析数据表格<span class="content-fold-arrow ${__parserCollapsed ? 'collapsed' : ''}" id="parserToggle" style="margin-left:auto;">&#9660;</span></div>`;
+  html += `<div id="parserFoldBody" style="${__parserCollapsed ? 'display:none;' : ''}">`;
   html += `<p style="font-size:12px;color:var(--text2);margin-bottom:10px;">选择<b>平台</b>后上传该平台导出的数据表（支持 <b>.xlsx</b> / <b>.csv</b> / <b>.tsv</b> / <b>.txt</b>），文件先<b>暂存</b>，确认无误后点「<b>导入解析</b>」：内容自动登记 + 数据自动填充，并同步到发布日历。</p>`;
 
   // 平台选择（仅 4 个短视频平台）；切换平台时刷新帮助说明 + 重检测暂存文件的匹配警告
@@ -31,6 +42,7 @@ function renderTableParser() {
     <button class="btn-edit" onclick="cancelPendingImport()">取消</button>
   </div>`;
   html += '<div id="parserResult" style="margin-top:8px;"></div>';
+  html += '</div>';
   html += '</div>';
 
   // 拖拽支持 + 初始填充帮助说明

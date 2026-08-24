@@ -5,6 +5,7 @@
 // 依赖：仅 Node.js 内置模块（http/fs/path）
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -167,6 +168,61 @@ const server = http.createServer(async (req, res) => {
           }
           res.writeHead(500); res.end('Batch write failed: ' + e.message);
         }
+      });
+      return;
+    }
+
+    // API：POST /api/llm/chat → 大模型请求代理（转发到 OpenAI 兼容 chat/completions）
+    // 原因：千问 token-plan 等专属域名不返回 CORS 头，浏览器直连会被跨域拦截（Failed to fetch），
+    // 统一由本地服务端转发可完全绕过；仅监听 127.0.0.1（默认）时此接口仅本机可用。
+    if (req.method === 'POST' && url === '/api/llm/chat') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        let cfg;
+        try { cfg = JSON.parse(body); } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: '请求体不是合法 JSON' } }));
+          return;
+        }
+        const { baseUrl, apiKey, model, messages, temperature } = cfg || {};
+        if (!/^https?:\/\//i.test(String(baseUrl)) || !apiKey || !model || !Array.isArray(messages) || messages.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: '缺少 baseUrl / apiKey / model / messages' } }));
+          return;
+        }
+        const target = String(baseUrl).replace(/\/+$/, '') + '/chat/completions';
+        const mod = /^https:/.test(target) ? https : http;
+        const upstreamBody = { model, messages };
+        if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
+          upstreamBody.temperature = Number(temperature);
+        }
+        let responded = false;
+        const upstream = mod.request(target, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + apiKey
+          }
+        }, (up) => {
+          const chunks = [];
+          up.on('data', c => chunks.push(c));
+          up.on('end', () => {
+            if (responded) return;
+            responded = true;
+            res.writeHead(up.statusCode || 502, { 'Content-Type': up.headers['content-type'] || 'application/json' });
+            res.end(Buffer.concat(chunks));
+          });
+        });
+        upstream.setTimeout(180000, () => upstream.destroy(new Error('上游请求超时')));
+        upstream.on('error', (e) => {
+          if (responded) return;
+          responded = true;
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: '无法连接大模型服务：' + e.message } }));
+        });
+        upstream.write(JSON.stringify(upstreamBody));
+        upstream.end();
       });
       return;
     }

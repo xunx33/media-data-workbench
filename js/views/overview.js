@@ -22,14 +22,27 @@ function renderOverview() {
   const monthFavorites = monthVideoStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
   const monthFollowers = monthVideoStats.reduce((sum, s) => sum + (s.followers || 0), 0);
 
+  // 上月数据（用于环比计算）
+  const prevMonth = new Date(year, month - 2, 1); // month-2 因为 getMonth() 是 0-indexed，month 是 1-indexed
+  const prevYear = prevMonth.getFullYear();
+  const prevMonthNum = prevMonth.getMonth() + 1;
+  const prevMonthStr = `${prevYear}-${String(prevMonthNum).padStart(2, '0')}`;
+  const prevVideoStats = stats.filter(s => (s.date || '').startsWith(prevMonthStr) && isVideo(s.platform));
+  const prevCount = contents.filter(c => (c.createdAt || '').startsWith(prevMonthStr) && isVideo(c.platform)).length;
+  const prevViews = prevVideoStats.reduce((sum, s) => sum + (s.views || 0), 0);
+  const prevLikes = prevVideoStats.reduce((sum, s) => sum + (s.likes || 0), 0);
+  const prevComments = prevVideoStats.reduce((sum, s) => sum + (s.comments || 0), 0);
+  const prevFavorites = prevVideoStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const prevFollowers = prevVideoStats.reduce((sum, s) => sum + (s.followers || 0), 0);
+
   html += `<div class="card"><div class="card-title">本月数据总览</div>`;
   html += `<div class="stats-grid">
-    <div class="stat-card"><div class="stat-value">${vDone}</div><div class="stat-label">总发布数</div></div>
-    <div class="stat-card"><div class="stat-value">${formatNum(monthViews)}</div><div class="stat-label">总播放量</div></div>
-    <div class="stat-card"><div class="stat-value">${formatNum(monthLikes)}</div><div class="stat-label">总点赞</div></div>
-    <div class="stat-card"><div class="stat-value">${formatNum(monthComments)}</div><div class="stat-label">总评论</div></div>
-    <div class="stat-card"><div class="stat-value">${formatNum(monthFavorites)}</div><div class="stat-label">总收藏</div></div>
-    <div class="stat-card"><div class="stat-value">${formatNum(monthFollowers)}</div><div class="stat-label">总涨粉</div></div>
+    ${statCardHtml(vDone, '总发布数', renderGrowthTag(vDone, prevCount))}
+    ${statCardHtml(monthViews, '总播放量', renderGrowthTag(monthViews, prevViews))}
+    ${statCardHtml(monthLikes, '总点赞', renderGrowthTag(monthLikes, prevLikes))}
+    ${statCardHtml(monthComments, '总评论', renderGrowthTag(monthComments, prevComments))}
+    ${statCardHtml(monthFavorites, '总收藏', renderGrowthTag(monthFavorites, prevFavorites))}
+    ${statCardHtml(monthFollowers, '总涨粉', renderGrowthTag(monthFollowers, prevFollowers))}
   </div>`;
   html += `</div>`;
 
@@ -71,9 +84,7 @@ function renderOverview() {
       <div class="platform-row-info">
         <div class="platform-row-name">${p}</div>
         <div class="platform-row-stat">${c.done} 条 / ${c.total} 天 · ${pct}%</div>
-        <div style="height:5px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden;">
-          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--video-orange),var(--video-orange-light));transition:width 0.5s var(--ease);border-radius:3px;"></div>
-        </div>
+        <div class="pbar-track"><div class="pbar" data-w="${pct}"></div></div>
       </div>
     </div>`;
   });
@@ -100,23 +111,29 @@ function renderPieChart(segments, total, type) {
       <text x="${CX}" y="${CY+4}" text-anchor="middle" font-size="9" fill="var(--text3)">暂无数据</text>
     </svg>`;
   } else {
-    // 扇区 path：从 12 点方向顺时针
+    // 扇区 path：从 12 点方向顺时针；直接生成完整 d，入场动画改用整体 scale 缩放展开
     let acc = 0;
-    const paths = segments.filter(s => (s.value || 0) > 0).map((s, i) => {
+    const pathElems = [];
+    segments.forEach((s, i) => {
       const frac = (s.value || 0) / sum;
-      const a0 = acc * 360 - 90, a1 = (acc + frac) * 360 - 90;
+      if (frac <= 0) return;
+      const a0f = acc, a1f = acc + frac;
       acc += frac;
+      const a0 = a0f * 360 - 90, a1 = a1f * 360 - 90;
       const x0 = CX + R * Math.cos(a0 * Math.PI / 180);
       const y0 = CY + R * Math.sin(a0 * Math.PI / 180);
       const x1 = CX + R * Math.cos(a1 * Math.PI / 180);
       const y1 = CY + R * Math.sin(a1 * Math.PI / 180);
       const large = frac > 0.5 ? 1 : 0;
-      return `<path data-u="${uid}" data-i="${i}" d="M${CX},${CY} L${x0.toFixed(2)},${y0.toFixed(2)} A${R},${R} 0 ${large} 1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${s.color}" stroke="var(--card-solid)" stroke-width="1" style="cursor:pointer;transition:all 0.2s;" onmouseover="pieHighlight('${uid}',${i},true)" onmouseout="pieHighlight('${uid}',${i},false)"/>`;
-    }).join('');
-    chart = `<svg viewBox="0 0 100 100" width="140" height="140" style="flex-shrink:0;">
-      ${paths}
-      <circle cx="${CX}" cy="${CY}" r="${R*0.45}" fill="var(--card-solid)"/>
-      <text x="${CX}" y="${CY+3}" text-anchor="middle" font-size="10" font-weight="600" fill="var(--text)">${formatNum(sum)}</text>
+      const d = 'M ' + CX + ' ' + CY + ' L ' + x0.toFixed(2) + ' ' + y0.toFixed(2) + ' A ' + R + ' ' + R + ' 0 ' + large + ' 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' Z';
+      pathElems.push(`<path data-u="${uid}" data-i="${i}" d="${d}" fill="${s.color}" stroke="var(--card-solid)" stroke-width="1" style="cursor:pointer;transition:opacity 0.2s,transform 0.2s;" onmouseover="pieHighlight('${uid}',${i},true)" onmouseout="pieHighlight('${uid}',${i},false)"/>`);
+    });
+    chart = `<svg viewBox="0 0 100 100" width="140" height="140" style="flex-shrink:0;" data-pie-uid="${uid}">
+      <g class="pie-content">
+        ${pathElems.join('')}
+        <circle cx="${CX}" cy="${CY}" r="${R*0.45}" fill="var(--card-solid)"/>
+        <text x="${CX}" y="${CY+3}" text-anchor="middle" font-size="10" font-weight="600" fill="var(--text)">${formatNum(sum)}</text>
+      </g>
     </svg>`;
   }
   // 图例（平台 + 数值 + 占比：数值紧跟平台名，百分比靠右）
@@ -140,7 +157,8 @@ function pieHighlight(uid, idx, on) {
   var paths = document.querySelectorAll('path[data-u="' + uid + '"]');
   var legends = document.querySelectorAll('div[data-u="' + uid + '"]');
   if (!paths.length) return;
-  paths.forEach(function(p, i) {
+  paths.forEach(function(p) {
+    var i = parseInt(p.getAttribute('data-i'), 10);
     if (!on) {
       p.style.opacity = '1';
       p.style.filter = 'none';
@@ -158,7 +176,8 @@ function pieHighlight(uid, idx, on) {
       p.style.strokeWidth = '1';
     }
   });
-  legends.forEach(function(l, i) {
+  legends.forEach(function(l) {
+    var i = parseInt(l.getAttribute('data-i'), 10);
     if (!on) {
       l.style.background = '';
       l.style.fontWeight = '';

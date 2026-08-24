@@ -199,6 +199,7 @@ function deleteReview(id) {
 
 // 双柱对比柱形图：当前周期实心柱 + 上期半透明柱
 // curLabel/prevLabel 跟随当前周期（本周/上周、本月/上月）
+// 入场动画：柱高初始 0，data-h 存目标高度，渲染后由 animateChartBars 触发生长（逐柱错峰）
 function renderDualBarChart(labels, currVals, prevVals, barClass, fmt, curLabel = '本期', prevLabel = '上期') {
   const maxV = Math.max(...currVals, ...prevVals, 1);
   let html = '<div class="bar-chart">';
@@ -206,15 +207,17 @@ function renderDualBarChart(labels, currVals, prevVals, barClass, fmt, curLabel 
     const v = currVals[i] || 0, pv = prevVals[i] || 0;
     const h = Math.max(Math.round(v / maxV * 100), 3);
     const ph = Math.max(Math.round(pv / maxV * 100), 3);
+    const delay = (i * 0.06).toFixed(2);
+    const delayPrev = (i * 0.06 + 0.03).toFixed(2);
     html += `<div class="bar-col">
       <div class="bar-pair">
         <div class="bar-pair-item" title="${curLabel} ${fmt(v)}">
           <div class="bar-value">${fmt(v)}</div>
-          <div class="bar ${barClass}" style="height:${h}%"></div>
+          <div class="bar ${barClass}" data-h="${h}" style="height:0;transition-delay:${delay}s"></div>
         </div>
         <div class="bar-pair-item" title="${prevLabel} ${fmt(pv)}">
           <div class="bar-value prev">${fmt(pv)}</div>
-          <div class="bar ${barClass} prev" style="height:${ph}%"></div>
+          <div class="bar ${barClass} prev" data-h="${ph}" style="height:0;transition-delay:${delayPrev}s"></div>
         </div>
       </div>
       <div class="bar-label">${label}</div>
@@ -227,7 +230,9 @@ function renderDualBarChart(labels, currVals, prevVals, barClass, fmt, curLabel 
 // 近 N 天趋势折线图（纯 SVG 自绘，零依赖）
 // points: [{date:'YYYY-MM-DD', value:number}] 按日期升序
 // 返回 SVG 折线 + 结束值标注；数据不足 2 天时返回空；onClick=全局函数名（点击数据点跳转，如跳发布日历）
-function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, height = 160, onClick = null, label = '总播放', prevAvg = null } = {}) {
+// 入场动画：线条描绘（dashoffset）+ 面积渐显 + 数据点级联浮现（见 animateTrendLines）
+// 悬停交互：透明 hit 圆触发小框显示日期与数值 + 竖向参考线（trendTipShow / trendTipHide）
+function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, height = 160, onClick = null, label = '总播放', prevAvg = null, trendLabel = null } = {}) {
   const data = points.filter(p => p && p.value !== undefined && p.value !== null);
   if (data.length < 2) {
     if (data.length === 1) {
@@ -276,6 +281,10 @@ function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, hei
   } else {
     trendBadge = `<span class="trend-flat">— 持平</span>`;
   }
+  // 对比说明（如"较上月日均"）紧贴升降百分比，作为一个整体阅读（用容器包裹，避免被 flex space-between 撑开）
+  if (trendLabel && prevAvg !== null) {
+    trendBadge = '<span class="trend-compare-group"><span class="trend-compare-label">' + trendLabel + '</span>' + trendBadge + '</span>';
+  }
   // 数值标注：局部峰值点（比左右都高）+ 最后一点；峰值过多时取最高的 5 个
   const peakIdxs = [];
   for (let i = 1; i < data.length - 1; i++) {
@@ -289,8 +298,20 @@ function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, hei
   labeledIdxs.add(data.length - 1); // 最后一点始终标注
   const valLabels = [...labeledIdxs].sort((a, b) => a - b).map(i => pts[i]);
 
+  // 可见数据点：入场级联浮现（opacity 0→1，逐点延迟）；悬停放大/描边由 CSS .trend-dot:hover / .hot 处理
+  // 内联 transition 需合并 r / stroke-width 项，否则会覆盖 CSS 里 hover 放大效果的过渡
+  const dots = pts.map((p, i) => {
+    return `<circle class="trend-dot" data-idx="${i}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${color}" style="opacity:0;transition:opacity 0.3s ease ${(0.55 + i * 0.03).toFixed(2)}s, r 0.12s ease, stroke-width 0.12s ease;"/>`;
+  }).join('');
+  // 透明 hit 圆：覆盖数据点周围区域，鼠标放上去/滑过即触发提示框；点击保留跳转（如跳发布日历）
+  const hits = pts.map((p, i) => {
+    const click = onClick ? ` onclick="${onClick}('${p.date}')"` : '';
+    return `<circle class="trend-hit" data-idx="${i}" data-date="${p.date}" data-label="${label}" data-val="${fmt(p.value)}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="13" fill="transparent"${click} onmousemove="trendTipShow(this)" onmouseleave="trendTipHide()"/>`;
+  }).join('');
+
   return `<div class="trend-box">
     <div class="trend-head"><span class="trend-label">${first.date} ~ ${last.date}</span>${trendBadge}</div>
+    <div class="trend-wrap">
     <svg viewBox="0 0 ${VBW} ${VBH}" preserveAspectRatio="xMidYMid meet" class="trend-svg">
       <defs>
         <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
@@ -298,15 +319,16 @@ function renderTrendLine(points, { color = 'var(--accent)', fmt = formatNum, hei
           <stop offset="100%" stop-color="${color}" stop-opacity="0.02"/>
         </linearGradient>
       </defs>
-      <path d="${area}" fill="url(#trendFill)"/>
-      <path d="${path}" fill="none" stroke="${color}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
-      ${pts.map(p => {
-        const click = onClick ? ` onclick="${onClick}('${p.date}')"` : '';
-        return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${color}"${click}><title>${p.date} · ${label} ${fmt(p.value)}</title></circle>`;
-      }).join('')}
+      <path class="trend-area" d="${area}" fill="url(#trendFill)" style="opacity:0;transition:opacity 0.7s ease 0.35s;"/>
+      <path class="trend-line" d="${path}" pathLength="1" fill="none" stroke="${color}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" style="stroke-dasharray:1;stroke-dashoffset:1;transition:stroke-dashoffset 0.95s ease;"/>
+      <line class="trend-guide" x1="0" x2="0" y1="${padT}" y2="${VBH - padB}"/>
       ${valLabels.map(p => `<text x="${p.x.toFixed(1)}" y="${(p.y - 9).toFixed(1)}" text-anchor="middle" font-size="18" font-weight="700" fill="${color}" style="paint-order:stroke;stroke:var(--bg);stroke-width:4px;">${fmt(p.value)}</text>`).join('')}
       ${labels.map(l => `<text x="${l.x.toFixed(1)}" y="${(VBH - 10).toFixed(1)}" text-anchor="middle" font-size="18" fill="var(--text3)">${l.date.slice(5)}</text>`).join('')}
+      ${dots}
+      ${hits}
     </svg>
+    <div class="trend-tip"><div class="trend-tip-date"></div><div class="trend-tip-val"></div></div>
+    </div>
   </div>`;
 }
 
@@ -330,18 +352,6 @@ function renderChartLegend(barClass, curLabel, prevLabel) {
     <span class="legend-item"><span class="legend-dot ${barClass}"></span>${curLabel || '当前'}</span>
     <span class="legend-item"><span class="legend-dot ${barClass} prev"></span>${prevLabel || '上期'}</span>
   </div>`;
-}
-
-// 环比增长标签：绿色（增长）/ 红色（下降），显示百分比；本期或上期为 0 时不显示
-function renderGrowthTag(cur, prev) {
-  if (!prev && !cur) return '';
-  if (!prev) return cur > 0 ? '<span class="stat-change up">新增</span>' : '';
-  if (!cur) return prev > 0 ? '<span class="stat-change down">-100%</span>' : '';
-  const pct = ((cur - prev) / prev) * 100;
-  if (pct === 0) return '<span class="stat-change flat">0%</span>';
-  const cls = pct > 0 ? 'up' : 'down';
-  const sign = pct > 0 ? '+' : '';
-  return '<span class="stat-change ' + cls + '">' + sign + Math.round(pct) + '%</span>';
 }
 
 // --- Video data（仅统计展示）---
@@ -370,12 +380,12 @@ function renderVideoData(period) {
 
   let html = `<div class="card"><div class="card-title">短视频平台${ranges.label}数据${titleSuffix} <span class="badge">${ranges.start} ~ ${ranges.end}</span></div>
     <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">${totalCount}</div><div class="stat-label">总发布数</div>${renderGrowthTag(totalCount, prevCount)}</div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalViews)}</div><div class="stat-label">总播放量</div>${renderGrowthTag(totalViews, prevViews)}</div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalLikes)}</div><div class="stat-label">总点赞</div>${renderGrowthTag(totalLikes, prevLikes)}</div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalComments)}</div><div class="stat-label">总评论</div>${renderGrowthTag(totalComments, prevComments)}</div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalFavorites)}</div><div class="stat-label">总收藏</div>${renderGrowthTag(totalFavorites, prevFavorites)}</div>
-      <div class="stat-card"><div class="stat-value">${formatNum(totalFollowers)}</div><div class="stat-label">总涨粉</div>${renderGrowthTag(totalFollowers, prevFollowers)}</div>
+      ${statCardHtml(totalCount, '总发布数', renderGrowthTag(totalCount, prevCount))}
+      ${statCardHtml(totalViews, '总播放量', renderGrowthTag(totalViews, prevViews))}
+      ${statCardHtml(totalLikes, '总点赞', renderGrowthTag(totalLikes, prevLikes))}
+      ${statCardHtml(totalComments, '总评论', renderGrowthTag(totalComments, prevComments))}
+      ${statCardHtml(totalFavorites, '总收藏', renderGrowthTag(totalFavorites, prevFavorites))}
+      ${statCardHtml(totalFollowers, '总涨粉', renderGrowthTag(totalFollowers, prevFollowers))}
     </div></div>`;
 
   // Bar chart（当前周期 vs 上期双柱对比）
@@ -422,7 +432,7 @@ function renderVideoData(period) {
   const prevTrendPts = aggregateDaily(stats.filter(s => byPf(s)), s => s.views || 0, trendDays, prevTrendEnd);
   const prevDailyAvg = prevTrendPts.length ? Math.round(prevTrendPts.reduce((s, p) => s + p.value, 0) / prevTrendPts.length) : 0;
   const trendLabel = isWeek ? '较上周日均' : '较上月日均';
-  html += `<div class="card"><div class="card-title">${trendTitle} <span class="badge">${isWeek ? '本周' : '近30天'} · ${pf || '4平台合计'} · ${trendLabel} · 点击数据点跳转当日</span></div>${renderTrendLine(trendPts, { color: '#fb923c', onClick: 'goCalendarDate', prevAvg: prevDailyAvg || null })}</div>`;
+  html += `<div class="card"><div class="card-title">${trendTitle} <span class="badge">${isWeek ? '本周' : '近30天'} · ${pf || '4平台合计'} · 点击数据点跳转当日</span></div>${renderTrendLine(trendPts, { color: '#fb923c', onClick: 'goCalendarDate', prevAvg: prevDailyAvg || null, trendLabel: trendLabel })}</div>`;
 
   // 未关联记录（录了数据但找不到对应内容）— 折叠面板
   const orphanStats = [...currStats].filter(s => findLinkedTitle(s, 'video') === null).sort((a,b) => b.date.localeCompare(a.date));  html += `<div class="card"><div class="card-title">未关联记录 <span class="badge">${orphanStats.length}</span></div>`;

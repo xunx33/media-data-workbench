@@ -158,3 +158,124 @@ function showToast(msg) {
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2000);
 }
+
+// ===== 数据卡片统一结构（今日/总览/数据复盘共用）=====
+// data-count 存原始数值供入场滚动动画使用（见 animateStatCounts）；extraHtml 挂环比标签等附加内容
+function statCardHtml(value, label, extraHtml) {
+  const v = Number(value) || 0;
+  return '<div class="stat-card"><div class="stat-value" data-count="' + v + '">' + formatNum(v) + '</div>' +
+    '<div class="stat-label">' + label + '</div>' + (extraHtml || '') + '</div>';
+}
+
+// 环比增长标签：绿色（增长）/ 红色（下降），显示百分比；本期或上期为 0 时不显示（放 ui.js 供 overview/data 共用）
+function renderGrowthTag(cur, prev) {
+  if (!prev && !cur) return '';
+  if (!prev) return cur > 0 ? '<span class="stat-change up">新增</span>' : '';
+  if (!cur) return prev > 0 ? '<span class="stat-change down">-100%</span>' : '';
+  const pct = ((cur - prev) / prev) * 100;
+  if (pct === 0) return '<span class="stat-change flat">0%</span>';
+  const cls = pct > 0 ? 'up' : 'down';
+  const sign = pct > 0 ? '+' : '';
+  return '<span class="stat-change ' + cls + '">' + sign + Math.round(pct) + '%</span>';
+}
+
+// ===== 数据看板入场动画（渲染完成后由 app.js render() 统一调度）=====
+// 全部基于 requestAnimationFrame / CSS transition；无 rAF 的环境（如测试沙箱）直接跳过，不阻塞渲染
+function __nextFrames(fn) { requestAnimationFrame(function(){ requestAnimationFrame(fn); }); }
+
+// 数字卡片：0 → 目标值快速滚动（650ms easeOutCubic，随 render 重放）
+function animateStatCounts() {
+  if (!window.requestAnimationFrame) return;
+  document.querySelectorAll('.stat-value[data-count]').forEach(function(el) {
+    const target = parseFloat(el.getAttribute('data-count'));
+    if (isNaN(target)) return;
+    const dur = 650, t0 = performance.now();
+    const frame = function() {
+      const p = Math.min((performance.now() - t0) / dur, 1);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = formatNum(Math.round(target * e));
+      if (p < 1) requestAnimationFrame(frame);
+    };
+    el.textContent = formatNum(0);
+    requestAnimationFrame(frame);
+  });
+}
+
+// 柱形图 / 进度条：从 0 生长到目标值（元素带 data-h / data-w，初始内联 0，transition 由 CSS 提供）
+function animateChartBars() {
+  const bars = document.querySelectorAll('.bar[data-h]');
+  const pbars = document.querySelectorAll('.pbar[data-w]');
+  if (!bars.length && !pbars.length) return;
+  __nextFrames(function() {
+    bars.forEach(function(b) { b.style.height = b.getAttribute('data-h') + '%'; });
+    pbars.forEach(function(b) { b.style.width = b.getAttribute('data-w') + '%'; });
+  });
+}
+
+// 饼图：整体从中心缩放展开（平面，无扭曲）
+function animatePieCharts() {
+  if (!window.requestAnimationFrame) return;
+  document.querySelectorAll('svg[data-pie-uid] .pie-content').forEach(function(g) {
+    requestAnimationFrame(function() {
+      g.classList.add('pie-expanded');
+    });
+  });
+}
+
+// 折线图：线条描绘（stroke-dashoffset 1→0）+ 面积渐显 + 数据点级联浮现
+function animateTrendLines() {
+  const wraps = document.querySelectorAll('.trend-wrap');
+  if (!wraps.length) return;
+  __nextFrames(function() {
+    wraps.forEach(function(w) {
+      const line = w.querySelector('.trend-line');
+      if (line) line.style.strokeDashoffset = '0';
+      const area = w.querySelector('.trend-area');
+      if (area) area.style.opacity = '1';
+      w.querySelectorAll('.trend-dot').forEach(function(d) { d.style.opacity = '1'; });
+    });
+  });
+}
+
+// 入场动画总入口
+function animateDashboard() {
+  animateStatCounts();
+  animateChartBars();
+  animatePieCharts();
+  animateTrendLines();
+}
+
+// ===== 折线图悬停提示（数据点 hit 圆触发：显示日期 + 数值小框 + 竖向参考线）=====
+let __trendTipTimer = null;
+function trendTipShow(el) {
+  if (__trendTipTimer) { clearTimeout(__trendTipTimer); __trendTipTimer = null; }
+  const svg = el.closest('svg');
+  const wrap = svg && svg.closest('.trend-wrap');
+  if (!wrap) return;
+  const tip = wrap.querySelector('.trend-tip');
+  const cx = el.getAttribute('cx'), cy = el.getAttribute('cy');
+  // viewBox 坐标 → 屏幕坐标（getScreenCTM 自动处理缩放与留白居中）
+  const pt = svg.createSVGPoint();
+  pt.x = parseFloat(cx); pt.y = parseFloat(cy);
+  const sp = pt.matrixTransform(svg.getScreenCTM());
+  const wr = wrap.getBoundingClientRect();
+  tip.style.left = (sp.x - wr.left) + 'px';
+  tip.style.top = (sp.y - wr.top) + 'px';
+  tip.querySelector('.trend-tip-date').textContent = el.getAttribute('data-date');
+  tip.querySelector('.trend-tip-val').textContent = (el.getAttribute('data-label') || '') + ' ' + el.getAttribute('data-val');
+  tip.classList.add('show');
+  const guide = svg.querySelector('.trend-guide');
+  if (guide) { guide.setAttribute('x1', cx); guide.setAttribute('x2', cx); guide.classList.add('show'); }
+  svg.querySelectorAll('.trend-dot.hot').forEach(function(d) { d.classList.remove('hot'); });
+  const dot = svg.querySelector('.trend-dot[data-idx="' + el.getAttribute('data-idx') + '"]');
+  if (dot) dot.classList.add('hot');
+}
+function trendTipHide() {
+  if (__trendTipTimer) clearTimeout(__trendTipTimer);
+  // 短暂延迟再隐藏：在相邻数据点间滑动时避免闪烁
+  __trendTipTimer = setTimeout(function() {
+    document.querySelectorAll('.trend-tip.show').forEach(function(t) { t.classList.remove('show'); });
+    document.querySelectorAll('.trend-guide.show').forEach(function(g) { g.classList.remove('show'); });
+    document.querySelectorAll('.trend-dot.hot').forEach(function(d) { d.classList.remove('hot'); });
+  }, 100);
+}

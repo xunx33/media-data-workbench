@@ -20,6 +20,7 @@ function render() {
   };
   document.getElementById('mainContent').innerHTML = html[currentTab]();
   applyContentFold();
+  animateDashboard();   // 数字滚动 / 柱形生长 / 饼图扫开 / 折线描绘 入场动画
   // 同步导航 tab 高亮（切换分区跳回今日待办时也保持一致）
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === currentTab));
   // 用户每次操作（点击/切换 tab）时主动 ping，关闭服务后立即检测到
