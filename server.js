@@ -9,6 +9,8 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+const { spawn, spawnSync } = require('child_process');
 
 const PORT = process.env.PORT || 3000;
 // 安全：默认仅本机可访问（绑定 127.0.0.1），避免局域网内任意设备读写数据 / 窃取 LLM 配置。
@@ -172,7 +174,79 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API：POST /api/llm/chat → 大模型请求代理（转发到 OpenAI 兼容 chat/completions）
+    // API：POST /api/ffmpeg/compress → 调用系统已装 ffmpeg 压缩视频（前端优先本地，避免下载 30MB wasm）
+// 请求体：原始视频二进制（body 直接是文件内容）；query 可带 duration=秒 用于码率估算
+// 成功：200 + video/mp4 二进制；ffmpeg 未安装：503 {error}；压缩失败：500 {error}
+const ffmpegAvailable = (() => {
+  try {
+    const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 10000 });
+    return r.error ? false : true;
+  } catch (e) { return false; }
+})();
+if (req.method === 'POST' && url === '/api/ffmpeg/compress') {
+  const query = req.url.split('?')[1] || '';
+  const duration = parseFloat((query.match(/duration=([\d.]+)/) || [])[1]) || 0;
+  const srcSize = parseInt((query.match(/size=(\d+)/) || [])[1], 10) || 0;
+  const chunks = [];
+  let size = 0;
+  req.on('data', c => { chunks.push(c); size += c.length; });
+  req.on('end', () => {
+    const responder = (code, obj) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(obj));
+    };
+    if (!ffmpegAvailable) return responder(503, { error: '未检测到系统 ffmpeg，请安装后重试或使用浏览器回退压缩' });
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcbff-'));
+    const inFile = path.join(tmpDir, 'in' + (duration === 0 ? '' : ''));
+    const outFile = path.join(tmpDir, 'out.mp4');
+    fs.writeFileSync(inFile, Buffer.concat(chunks));
+    // 码率预算：按时长反推（与前端口径一致：压缩目标 6MB = base64 约 8.3MB，低于接口约 9.8MB 请求体上限）
+    const audioBit = 64000;
+    const seconds = Math.max(duration, 10);
+    let videoBit = Math.max(200000, Math.min(1500000, 6 * 1024 * 1024 * 8 / seconds - audioBit));
+    // 原视频码率估算：预算码率不超过原码率，避免「越压越大」（源视频较小时直接保原码率）
+    if (srcSize > 0 && seconds > 0) {
+      const srcBit = srcSize * 8 / seconds;
+      if (srcBit < videoBit) videoBit = Math.max(200000, Math.round(srcBit));
+    }
+    const maxW = duration > 180 ? 540 : 960;
+    const vf = "scale='min(" + maxW + ",iw)':-2";
+    const child = spawn('ffmpeg', [
+      '-y', '-i', inFile, '-vf', vf, '-r', '15',
+      '-c:v', 'libx264', '-preset', 'ultrafast',
+      '-b:v', String(Math.round(videoBit)), '-maxrate', String(Math.round(videoBit * 1.45)), '-bufsize', String(Math.round(videoBit * 2.9)),
+      '-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', outFile
+    ], { windowsHide: true });
+    let errLog = '';
+    child.stderr.on('data', d => { errLog += String(d); });
+    child.on('error', e => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {} responder(503, { error: 'ffmpeg 启动失败：' + e.message }); });
+    child.on('close', code => {
+      if (code === 0 && fs.existsSync(outFile)) {
+        // 压缩后不比原文件小 → 原样返回原始数据（杜绝「越压越大」）
+        const outSize = fs.statSync(outFile).size;
+        if (srcSize > 0 && outSize >= srcSize) {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {}
+          res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': chunks.reduce((s, c) => s + c.length, 0) });
+          res.end(Buffer.concat(chunks));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': outSize });
+        fs.createReadStream(outFile).on('close', () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {} }).pipe(res);
+      } else {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {}
+        responder(500, { error: 'ffmpeg 压缩失败：' + errLog.slice(-400) });
+      }
+    });
+  });
+  return;
+}
+
+// API：GET /api/ffmpeg/check → 检测本机是否已装 ffmpeg（供前端提示用）
+if (req.method === 'GET' && url === '/api/ffmpeg/check') {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ available: ffmpegAvailable }));
+  return;
+}
     // 原因：千问 token-plan 等专属域名不返回 CORS 头，浏览器直连会被跨域拦截（Failed to fetch），
     // 统一由本地服务端转发可完全绕过；仅监听 127.0.0.1（默认）时此接口仅本机可用。
     if (req.method === 'POST' && url === '/api/llm/chat') {

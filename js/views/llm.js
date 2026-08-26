@@ -805,9 +805,9 @@ function cancelAiCopy() {
 
 // ===== AI 视频拆解专家（识别拆解视频 → 去重二创方案）=====
 // 多模态：视频直接以 video_url(base64) 发给支持视觉的模型（如 qwen3.7-plus）
-// 视频超 20MB 时自动降码率/分辨率压缩（canvas + MediaRecorder 纯前端，不依赖服务器）
-const AI_DISSECT_MAX_BYTES = 20 * 1024 * 1024;   // 接口上传上限（按 tokenplan 假设 20MB）
-const AI_DISSECT_TARGET_BYTES = 10 * 1024 * 1024; // 压缩目标（10MB：过大时服务端解析多模态文件易超时）
+// 接口请求体上限实测约 9.8MB（base64 后）→ 直发原始视频上限约 7MB；超过则压缩；优先本机 ffmpeg（零下载），未安装才加载 ffmpeg.wasm
+const AI_DISSECT_MAX_BYTES = 7 * 1024 * 1024;    // 直发安全线：raw 7MB → base64 约 9.4MB（< 9.8MB 实测上限）
+const AI_DISSECT_TARGET_BYTES = 6 * 1024 * 1024; // 压缩目标：raw 6MB → base64 约 8.3MB，留足余量
 
 let __aiDissectFile = null;        // 当前选中的视频 File
 let __aiDissectMeta = null;        // {size, duration, compressed, note}
@@ -823,6 +823,7 @@ let __aiDissectBrand = '';         // 品牌植入（可选）
 let __aiDissectNote = '';          // 补充要求（可选，自由文本）
 let __aiDissectRunId = 0;          // 自增，防止旧回调污染新状态
 let __aiDissectCompressCtrl = null; // 压缩取消控制器（AbortController）
+let __aiDissectAutoStart = false;   // 弹窗勾选：压缩完成后自动开始拆解
 
 // 取消压缩：中断压缩流程，保留原文件可重新点击压缩
 function cancelDissectCompress() {
@@ -857,7 +858,7 @@ function renderAiVideoDissectCard() {
               ondrop="event.preventDefault();this.style.borderColor='';if(event.dataTransfer.files.length>0)handleAiDissectFile(event.dataTransfer.files[0])">
               <div class="upload-icon">&#127916;</div>
               <div>${__aiDissectFile ? '已选择：' + escapeHtml(__aiDissectFile.name) : '点击选择视频，或拖拽到此处'}</div>
-              ${__aiDissectMeta ? `<div style="font-size:11px;color:var(--text3);margin-top:4px;">${formatBytes(__aiDissectMeta.size)} · ${formatDuration(__aiDissectMeta.duration)}${__aiDissectCompressed ? ' · 已自动压缩 ' + formatBytes(__aiDissectCompressed.size) : (__aiDissectFile && __aiDissectFile.size > AI_DISSECT_MAX_BYTES && !__aiDissectCompressing ? ' · 超 20MB，点击「AI 拆解二创」先压缩' : '')}</div>` : '<div style="font-size:11px;color:var(--text3);margin-top:4px;">支持 mp4/mov/webm 等 · 超过 20MB 自动降码率压缩</div>'}
+              ${__aiDissectMeta ? '<div style="font-size:11px;color:var(--text3);margin-top:4px;">' + formatBytes(__aiDissectMeta.size) + ' · ' + formatDuration(__aiDissectMeta.duration) + (__aiDissectCompressed ? ' · 已自动压缩 ' + formatBytes(__aiDissectCompressed.size) : (__aiDissectFile && __aiDissectFile.size > AI_DISSECT_MAX_BYTES && !__aiDissectCompressing ? ' · 超 ' + formatBytes(AI_DISSECT_MAX_BYTES) + '，点击「AI 拆解二创」先压缩' : '')) + '</div>' : '<div style="font-size:11px;color:var(--text3);margin-top:4px;">支持 mp4/mov/webm 等 · 接口限制约 7MB，超过自动降码率压缩</div>'}
             </div>
             <input type="file" id="aiDissectFile" accept="video/*" style="display:none;" onchange="handleAiDissectFile(this.files[0])">
           </div>
@@ -908,6 +909,7 @@ function renderAiVideoDissectCard() {
 }
 function aiDissectHeadButtons() {
   return '<div style="margin-left:auto;display:flex;gap:6px;">' +
+    '<button class="btn-danger" onclick="copyAiVideoDissectResult()" style="font-size:11px;padding:4px 10px;cursor:pointer;">复制结果</button>' +
     '<button class="btn-danger" onclick="clearAiVideoDissectResult()" style="font-size:11px;padding:4px 10px;cursor:pointer;">清空</button>' +
     '</div>';
 }
@@ -937,7 +939,7 @@ function handleAiDissectFile(file) {
     __aiDissectMeta.duration = vid.duration || 0;
     URL.revokeObjectURL(url);
     render();
-    showToast('视频已选择' + (file.size > AI_DISSECT_MAX_BYTES ? '，超过 20MB，点击分析时将自动压缩' : ''));
+    showToast('视频已选择' + (file.size > AI_DISSECT_MAX_BYTES ? '，超过 ' + formatBytes(AI_DISSECT_MAX_BYTES) + '，点击分析时将自动压缩' : ''));
   };
   vid.onerror = () => {
     if (runId !== __aiDissectRunId) return;
@@ -949,7 +951,35 @@ function handleAiDissectFile(file) {
   vid.src = url;
 }
 
-// ===== ffmpeg.wasm 压缩（比 MediaRecorder 实时录制快数倍；CDN 按需加载，仅首次需下载）=====
+// ===== 视频压缩：先检测本机 ffmpeg（快、零下载）→ 未安装才加载 ffmpeg.wasm（无浏览器实时压缩）=====
+// 本机 ffmpeg：上传二进制给 /api/ffmpeg/compress，服务端用系统 ffmpeg 快速压缩
+async function compressVideoWithSystemFfmpeg(file, durationSec, onProgress, signal) {
+  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
+  const res = await fetch('/api/ffmpeg/compress?duration=' + encodeURIComponent(durationSec || '') + '&size=' + file.size, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+    signal
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { const j = await res.json(); detail = j && j.error ? '：' + j.error : ''; } catch (e) {}
+    const err = new Error('HTTP ' + res.status + detail);
+    err.localFfmpegUnavailable = res.status === 503;
+    throw err;
+  }
+  const buf = await res.arrayBuffer();
+  if (onProgress) onProgress(1);
+  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
+  return new Blob([buf], { type: 'video/mp4' });
+}
+
+// 检测本机是否已装 ffmpeg（供压缩前分流：本地 → wasm）
+function checkSystemFfmpeg() {
+  return fetch('/api/ffmpeg/check').then(r => r.json()).then(j => !!(j && j.available)).catch(() => false);
+}
+
+// ===== ffmpeg.wasm 压缩（本机未装 ffmpeg 时回退；CDN 按需加载，仅首次需下载）=====
 let __ffmpegLoading = null;   // 加载中 promise 缓存（防并发重复加载）
 const FFMPEG_BASE = 'https://cdn.jsdelivr.net/npm';
 function loadFfmpeg() {
@@ -982,7 +1012,7 @@ function loadFfmpeg() {
   return __ffmpegLoading;
 }
 
-// ffmpeg 压缩：按时长算码率（目标 18MB 内）+ 限宽 720/1280 + 24fps + ultrafast 快速编码
+// ffmpeg 压缩：按时长算码率（目标 10MB 内）+ 限宽 540/960 + 15fps + ultrafast 快速编码
 async function compressVideoWithFfmpeg(file, durationSec, onProgress, signal) {
   if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
   const ffmpeg = await loadFfmpeg();
@@ -998,7 +1028,7 @@ async function compressVideoWithFfmpeg(file, durationSec, onProgress, signal) {
     const outName = 'out.mp4';
     await ffmpeg.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
     if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-    // 码率与回退方案同口径：预算 10MB 反推（过大服务端解析易超时）
+    // 码率：预算 10MB 反推（与服务端同口径）
     const audioBit = 64000;
     const videoBit = Math.max(200000, Math.min(1500000, AI_DISSECT_TARGET_BYTES * 8 / Math.max(durationSec, 10) - audioBit));
     const maxW = durationSec > 180 ? 540 : 960;
@@ -1020,7 +1050,7 @@ async function compressVideoWithFfmpeg(file, durationSec, onProgress, signal) {
     } catch (e) { execErr = e; }
     ffmpeg.off('progress', progressHandler);
     try { await ffmpeg.deleteFile(inName); } catch (e) {}
-    if (signal && signal.aborted || execErr) {
+    if ((signal && signal.aborted) || execErr) {
       try { await ffmpeg.deleteFile(outName); } catch (e) {}
       if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
       throw execErr || new Error('压缩执行失败');
@@ -1032,95 +1062,6 @@ async function compressVideoWithFfmpeg(file, durationSec, onProgress, signal) {
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
-}
-
-// 纯前端压缩：canvas 缩放 + captureStream + MediaRecorder 低码率重录（mp4→webm 根据浏览器能力）
-function pickRecorderMime() {
-  if (!window.MediaRecorder) return '';
-  const c = [
-    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-    'video/mp4',
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm'
-  ];
-  for (const m of c) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (e) {} }
-  return '';
-}
-
-async function compressVideoBlob(blob, onProgress, signal) {
-  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-  const url = URL.createObjectURL(blob);
-  const vid = document.createElement('video');
-  vid.muted = true;
-  vid.playsInline = true;
-  vid.preload = 'auto';
-  await new Promise((resolve, reject) => {
-    vid.onloadedmetadata = resolve;
-    vid.onerror = () => reject(new Error('无法读取视频文件'));
-    vid.src = url;
-  });
-  const duration = vid.duration || 0;
-  if (!duration) { URL.revokeObjectURL(url); return blob; }
-  // 按时长估算码率：预算给 18MB，按 (bitrate+audioBitrate) 反推
-  const budgetBits = AI_DISSECT_TARGET_BYTES * 8;
-  const audioBit = 64000;
-  const durationSec = Math.max(duration, 10);
-  const videoBit = Math.max(200000, Math.min(2500000, budgetBits / durationSec - audioBit));
-  // 分辨率：短视频保留 720p；长视频降 480p；竖屏按宽约束
-  const maxW = duration > 180 ? 720 : 1280;
-  const scale = Math.min(1, maxW / vid.videoWidth);
-  const w = Math.max(2, Math.round(vid.videoWidth * scale / 2) * 2);
-  const h = Math.max(2, Math.round(vid.videoHeight * scale / 2) * 2);
-  const fps = 24;
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d', { alpha: false });
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
-  const canvasStream = canvas.captureStream(fps);
-  // 尝试带上原始音轨（部分浏览器 captureStream 含音频）
-  let stream = canvasStream;
-  try {
-    const native = vid.captureStream();
-    const audioTracks = native.getAudioTracks();
-    if (audioTracks.length) {
-      stream = new MediaStream([canvasStream.getVideoTracks()[0], ...audioTracks]);
-    }
-  } catch (e) {}
-  const mime = pickRecorderMime();
-  if (!mime) { URL.revokeObjectURL(url); throw new Error('当前浏览器不支持视频转码，请换 Chrome/Edge'); }
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: Math.round(videoBit), audioBitsPerSecond: audioBit });
-  const chunks = [];
-  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  const stopped = new Promise(resolve => { rec.onstop = () => resolve(); });
-  // 取消：暂停播放 + 停止录制，让下方 ended 等待尽快返回
-  const onAbort = () => { try { vid.pause(); } catch (e) {} try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} };
-  if (signal) signal.addEventListener('abort', onAbort);
-  // 绘制循环：逐帧画到 canvas
-  let raf = 0;
-  const draw = () => {
-    if (!vid.paused && !vid.ended) {
-      ctx.drawImage(vid, 0, 0, w, h);
-      if (onProgress) onProgress(Math.min(0.99, (vid.currentTime || 0) / duration));
-    }
-    raf = requestAnimationFrame(draw);
-  };
-  await vid.play().catch(() => {});
-  rec.start(500);
-  draw();
-  await new Promise(resolve => {
-    vid.addEventListener('ended', resolve);
-    vid.addEventListener('error', resolve);
-    if (signal) signal.addEventListener('abort', resolve);
-  });
-  cancelAnimationFrame(raf);
-  if (!(signal && signal.aborted)) await new Promise(r => setTimeout(r, 500));   // 录尾帧缓冲
-  try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
-  await stopped;
-  if (signal) signal.removeEventListener('abort', onAbort);
-  URL.revokeObjectURL(url);
-  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-  return new Blob(chunks, { type: mime });
 }
 
 function blobToBase64(blob) {
@@ -1159,7 +1100,7 @@ function buildVideoDissectPrompt(durationSec, style, brand) {
 }
 
 // 主流程（两阶段分离）：
-// 阶段一：视频超 20MB 且未压缩过 → 仅压缩（不扣额度），完成后提示再次点击
+// 阶段一：视频超出接口限制（约 7MB）且未压缩过 → 仅压缩（不扣额度），完成后提示再次点击
 // 阶段二：拆解（优先用已压缩的缓存，即使压缩后仍超限也直接尝试发送，不会循环压缩）
 async function runAiVideoDissect() {
   if (__aiDissectLoading || __aiDissectCompressing) return;
@@ -1171,13 +1112,18 @@ async function runAiVideoDissect() {
 
   const runId = ++__aiDissectRunId;
 
-  // ===== 阶段一：超 20MB 且尚无压缩缓存 → 弹窗确认后再压缩 =====
+  // ===== 阶段一：超出接口限制（约 7MB）且尚无压缩缓存 → 弹窗确认后再压缩 =====
   if (!__aiDissectCompressed && __aiDissectFile.size > AI_DISSECT_MAX_BYTES) {
     showConfirm({
       title: '视频超过大小限制',
-      desc: '当前视频 ' + formatBytes(__aiDissectFile.size) + '，超过接口 20MB 上限，需要先压缩（降码率+降分辨率，与视频时长同步）。压缩完成后需再次点击「AI 拆解二创」开始拆解。是否继续？',
+      desc: '当前视频 ' + formatBytes(__aiDissectFile.size) + '，超过接口 ' + formatBytes(AI_DISSECT_MAX_BYTES) + ' 上限（实测限制约 7MB，base64 后约 9.4MB），需要先压缩（降码率+降分辨率）。是否继续？' +
+        '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;color:var(--text2);font-size:13px;">' +
+        '<input type="checkbox" id="autoDissectAfterCompress" checked style="width:16px;height:16px;">压缩完成后自动开始拆解</label>',
       okText: '继续',
-      onOk: () => runDissectCompressStage(runId)
+      onOk: () => {
+        __aiDissectAutoStart = !!document.getElementById('autoDissectAfterCompress')?.checked;
+        runDissectCompressStage(runId);
+      }
     });
     return;
   }
@@ -1231,8 +1177,8 @@ async function runAiVideoDissect() {
   }
 }
 
-// 压缩阶段（确认弹窗后调用）：压缩完成后不自动拆解，提示用户再次点击；支持取消
-// 优先 ffmpeg.wasm（快数倍）；加载失败/环境不支持时自动回退 MediaRecorder 实时录制
+// 压缩阶段（确认弹窗后调用）：根据勾选决定是否自动开始拆解；支持取消
+// 策略：先检测本机 ffmpeg（快、零下载）→ 未安装才加载 ffmpeg.wasm（无浏览器实时压缩）
 async function runDissectCompressStage(runId) {
   __aiDissectCompressing = true;
   __aiDissectCompressText = '视频 ' + formatBytes(__aiDissectFile.size) + '，正在压缩...';
@@ -1247,17 +1193,19 @@ async function runDissectCompressStage(runId) {
   const durationSec = (__aiDissectMeta && __aiDissectMeta.duration) || 0;
   try {
     let out;
-    try {
-      setProg('正在加载压缩引擎（首次需下载约 30MB，仅此一次）...');
+    const localAvailable = await checkSystemFfmpeg();
+    if (ctrl.signal.aborted) throw new DOMException('已取消', 'AbortError');
+    if (localAvailable) {
+      // 本机已装 ffmpeg：走本地服务压缩（快、零下载）
+      setProg('正在调用本机 ffmpeg 压缩（加速，零下载）...');
+      out = await compressVideoWithSystemFfmpeg(__aiDissectFile, durationSec, p => {
+        setProg('正在压缩视频... ' + Math.round(p * 100) + '%（本机 ffmpeg 加速）');
+      }, ctrl.signal);
+    } else {
+      // 本机未装 ffmpeg：下载 ffmpeg.wasm（仅首次约 30MB）
+      setProg('本机未检测到 ffmpeg，正在加载压缩引擎（首次需下载约 30MB，仅此一次）...');
       out = await compressVideoWithFfmpeg(__aiDissectFile, durationSec, p => {
         setProg('正在压缩视频... ' + Math.round(p * 100) + '%（ffmpeg 加速）');
-      }, ctrl.signal);
-    } catch (e) {
-      if (ctrl.signal.aborted) throw e;   // 用户取消：直接走取消流程
-      showToast('压缩引擎加载失败，已回退实时压缩（较慢）');
-      setProg('压缩引擎不可用，回退浏览器实时压缩（较慢，与视频时长同步）...');
-      out = await compressVideoBlob(__aiDissectFile, p => {
-        setProg('正在压缩视频... ' + Math.round(p * 100) + '%（与视频时长同步）');
       }, ctrl.signal);
     }
     if (runId !== __aiDissectRunId) return;
@@ -1266,9 +1214,15 @@ async function runDissectCompressStage(runId) {
     __aiDissectCompressing = false;
     __aiDissectCompressText = '';
     render();
-    showToast(out.size > AI_DISSECT_MAX_BYTES
-      ? '压缩后仍超 20MB（' + formatBytes(out.size) + '），再次点击「AI 拆解二创」将尝试直接发送'
-      : '压缩完成（' + formatBytes(out.size) + '），再次点击「AI 拆解二创」开始拆解');
+    if (__aiDissectAutoStart) {
+      __aiDissectAutoStart = false;
+      showToast('压缩完成（' + formatBytes(out.size) + '），自动开始拆解...');
+      setTimeout(() => runAiVideoDissect(), 100);
+    } else {
+      showToast(out.size > AI_DISSECT_MAX_BYTES
+        ? '压缩后仍超 ' + formatBytes(AI_DISSECT_MAX_BYTES) + '（' + formatBytes(out.size) + '），再次点击「AI 拆解二创」将尝试直接发送'
+        : '压缩完成（' + formatBytes(out.size) + '），再次点击「AI 拆解二创」开始拆解');
+    }
   } catch (e) {
     if (runId !== __aiDissectRunId) return;
     __aiDissectCompressing = false;
@@ -1285,5 +1239,10 @@ function clearAiVideoDissectResult() {
   __aiDissectError = '';
   render();
   showToast('结果已清空');
+}
+
+function copyAiVideoDissectResult() {
+  if (!__aiDissectResult) { showToast('暂无结果可复制'); return; }
+  copyAiCopyText(__aiDissectResult);
 }
 

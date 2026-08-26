@@ -34,7 +34,7 @@ function renderContent() {
   const pageItems = filtered.slice((contentPage - 1) * pageSize, contentPage * pageSize);
   html += `<div class="content-fold" id="contentFold">
     <div class="content-fold-header" onclick="toggleContentFold()">
-      <span class="content-fold-title">📋 登记列表 <span class="badge">${filtered.length}条</span></span>
+      <span class="content-fold-title">📋 登记列表</span>
       <span class="content-fold-arrow" id="foldArrow">&#9650;</span>
     </div>
     <div id="contentList" class="content-fold-body">`;
