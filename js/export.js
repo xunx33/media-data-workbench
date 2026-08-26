@@ -8,7 +8,7 @@ function exportData() {
 }
 
 // ===== 导出 Excel（HTML 表格，Excel 双击可直接打开）=====
-// 报表含：数据概览 / 内容登记 / 视频数据 / 视频平台账号数据（有数据才显示）/ 视频平台复盘记录（存在才显示）
+// 报表含：数据概览 / 账号数据总览（有数据才显示）/ 内容登记 / 视频数据 / 视频平台复盘记录（存在才显示）
 // 整体按「日期 + 平台」分组，同一日期的单元格纵向合并；只显示登记条数，不显示任务完成
 // 支持导出范围：全部 / 本周（周一~周日）/ 本月（日历月），区间复用数据复盘页的 getPeriodRanges
 
@@ -141,7 +141,7 @@ function buildVideoSheet(ds) {
         cellNum(s.followers),
       ])
     }));
-    return buildMergedTable(p + '视频数据', headers, groups, '');
+    return buildMergedTable(p + '内容数据', headers, groups, '');
   }).join('');
   return html;
 }
@@ -202,10 +202,11 @@ function buildAccountSheet(ds) {
     });
     return best;
   };
-  const rowHtml = (p, accountId, note, r) => `<tr>
+  const rowHtml = (p, accountId, note, operator, r) => `<tr>
     <td>${escapeHtml(p)}</td>
     <td>${escapeHtml(accountId || '')}</td>
     <td>${escapeHtml(note || '')}</td>
+    <td>${escapeHtml(operator || '')}</td>
     <td>${r ? escapeHtml(r.date) : ''}</td>
     <td>${r ? cellNum(r.posts) : ''}</td>
     <td>${r ? cellNum(r.followers) : ''}</td>
@@ -214,9 +215,9 @@ function buildAccountSheet(ds) {
     <td>${r ? cellNum(r.comments) : ''}</td>
     <td>${r ? cellNum(r.shares) : ''}</td>
   </tr>`;
-  let html = '<h2>视频平台账号数据</h2>';
+  let html = '<h2>账号数据总览</h2>';
   html += '<p style="color:#9ca3af;font-size:12px;margin:2px 0 8px;">账号ID列出全部登记记录（一个平台可有多个账号）；数据列对应该账号最近一次记录（未绑定账号的历史数据归「未指定账号」行），未登记账号ID时该栏留空</p>';
-  html += '<table><thead><tr><th>平台</th><th>账号ID</th><th>备注</th><th>记录日期</th><th>发布量</th><th>粉丝量</th><th>总播放量</th><th>总点赞量</th><th>总评论量</th><th>总转发/分享</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>平台</th><th>账号ID</th><th>备注</th><th>运营人</th><th>记录日期</th><th>发布量</th><th>粉丝量</th><th>总播放量</th><th>总点赞量</th><th>总评论量</th><th>总转发/分享</th></tr></thead><tbody>';
   const hasVal = r => r && ((r.accountId && r.accountId.trim()) || (r.note && r.note.trim()));
   const validIds = accIds.filter(hasVal);
   VIDEO_PLATFORMS.forEach(p => {
@@ -224,17 +225,17 @@ function buildAccountSheet(ds) {
     if (recs.length === 0) {
       // 无账号ID记录：有数据则保留一行（ID/备注留空）
       const r = latestOf(p);
-      if (r) html += rowHtml(p, '', '', r);
+      if (r) html += rowHtml(p, '', '', '', r);
     } else {
       // 有账号ID记录：每条一行，数据列优先该账号最新快照（无则平台最新）
       recs.forEach(rec => {
         const r = latestOfRef(p, rec.id) || latestOf(p);
-        html += rowHtml(p, rec.accountId, rec.note, r);
+        html += rowHtml(p, rec.accountId, rec.note, rec.operator, r);
       });
     }
     // 未指定账号的历史数据单独一行
     const orphan = latestUnspecified(p);
-    if (orphan) html += rowHtml(p, '', '未指定账号', orphan);
+    if (orphan) html += rowHtml(p, '', '未指定账号', '', orphan);
   });
   html += '</tbody></table>';
   return html;
@@ -291,15 +292,16 @@ function buildReportHtml(scope, scopeLabel) {
   const hasVideoAccounts = (ds.accountIds || []).some(function(r){
     return (r.accountId && r.accountId.trim()) || (r.note && r.note.trim());
   }) || (ds.accountStats || []).length > 0;
-  const metaParts = ['数据概览', '内容登记', '视频数据'];
-  if (hasVideoAccounts) metaParts.push('视频平台账号数据');
+  const metaParts = ['数据概览'];
+  if (hasVideoAccounts) metaParts.push('账号数据总览');
+  metaParts.push('内容登记', '视频数据');
   if (videoReviews.length) metaParts.push('视频平台复盘记录');
   const sectionsArr = [
     buildOverviewSheet(ds),
+    hasVideoAccounts ? buildAccountSheet(ds) : '',
     buildContentRegSheet(ds),
     buildVideoSheet(ds),
   ];
-  if (hasVideoAccounts) sectionsArr.push(buildAccountSheet(ds));
   if (videoReviews.length) sectionsArr.push(buildReviewSheet(ds, 'video', '视频平台复盘记录'));
   const sections = sectionsArr.join('');
   const rangeText = range ? `（${range.start} ~ ${range.end}）` : '';
@@ -341,8 +343,9 @@ function exportExcel(scope) {
   const hasVAccounts = accountIds.some(function(r){
     return (r.accountId && r.accountId.trim()) || (r.note && r.note.trim());
   }) || accountStats.length > 0;
-  const toastParts = ['数据概览/内容登记/视频数据'];
-  if (hasVAccounts) toastParts.push('视频平台账号数据');
+  const toastParts = ['数据概览'];
+  if (hasVAccounts) toastParts.push('账号数据总览');
+  toastParts.push('内容登记/视频数据');
   if (hasVReview) toastParts.push('视频平台复盘记录');
   showToast(`已导出${scopeLabel}Excel 报表（${toastParts.join('/')}）`);
 }

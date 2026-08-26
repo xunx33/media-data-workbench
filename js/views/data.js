@@ -481,8 +481,8 @@ function renderAccountData() {
   let html = '';
 
   // 1. 记录表单（日期固定为今天=最新总数据快照；平台在标题右侧按钮选择；账号ID/备注随平台联动）
-  html += '<div class="card"><div class="card-title">记录账号数据 <span class="badge">今日 ' + getToday() + ' · 最新总数据</span>';
-  html += '<span class="platform-pill">' + VIDEO_PLATFORMS.map(function(p){ return '<button class="pill' + (p === accSelectedPlatform ? ' active' : '') + '" onclick="selectAccountPlatform(\'' + p + '\')">' + p + '</button>'; }).join('') + '</span>';
+  html += '<div class="card"><div class="card-title">记录账号数据 ';
+  html += '<span class="platform-filter-row">' + VIDEO_PLATFORMS.map(function(p){ return '<span class="filter-pill' + (p === accSelectedPlatform ? ' active' : '') + '" onclick="selectAccountPlatform(\'' + p + '\')">' + p + '</span>'; }).join('') + '</span>';
   html += '</div>';
   // 账号ID + 备注 + 登录手机号 + 实名人 + 运营人（输入框始终为空，避免预填导致保存后内容"看着没清"；已保存内容见下方表格）
   html += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">';
@@ -498,7 +498,7 @@ function renderAccountData() {
   // 已保存的账号ID（始终渲染表格，避免空/非空切换时跳动；每行带删除按钮）
   var savedIds = accountIds.filter(function(r){ return (r.accountId && r.accountId.trim()) || (r.note && r.note.trim()) || (r.phone && r.phone.trim()) || (r.realName && r.realName.trim()) || (r.operator && r.operator.trim()); });
   html += '<div style="margin:10px 0 2px;"><div style="font-size:12px;color:var(--text3);margin-bottom:4px;">已保存的账号ID（' + savedIds.length + '条）</div>';
-  html += '<table class="data-table"><thead><tr><th style="width:90px;">平台</th><th>账号ID</th><th>备注</th><th>登录手机号</th><th>实名人姓名</th><th>运营人</th><th style="width:120px;"></th></tr></thead><tbody>';
+  html += '<table class="data-table"><thead><tr><th style="width:90px;">平台</th><th>账号ID</th><th>备注</th><th>登录手机号</th><th>实名人姓名</th><th>运营人</th><th style="width:120px;text-align:right;"></th></tr></thead><tbody>';
   if (savedIds.length === 0) {
     html += '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:14px 0;">暂无，保存后显示在此处</td></tr>';
   } else {
@@ -508,7 +508,7 @@ function renderAccountData() {
       return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.id - b.id;
     }).forEach(function(sr) {
       html += '<tr><td><span class="platform-tag video">' + escapeHtml(sr.platform) + '</span></td><td>' + escapeHtml(sr.accountId || '') + '</td><td>' + escapeHtml(sr.note || '') + '</td><td>' + escapeHtml(sr.phone || '') + '</td><td>' + escapeHtml(sr.realName || '') + '</td><td>' + escapeHtml(sr.operator || '') + '</td>';
-      html += '<td style="white-space:nowrap;"><button class="btn-edit-mini" onclick="editAccountId(\'' + sr.id + '\')">编辑</button> <button class="btn-delete-mini" onclick="deleteAccountId(\'' + sr.id + '\')">删除</button></td></tr>';
+      html += '<td style="white-space:nowrap;text-align:right;"><button class="btn-edit-mini" onclick="editAccountId(\'' + sr.id + '\')">编辑</button> <button class="btn-delete-mini" onclick="deleteAccountId(\'' + sr.id + '\')">删除</button></td></tr>';
     });
   }
   html += '</tbody></table></div>';
@@ -523,12 +523,12 @@ function renderAccountData() {
   });
   html += '</select></div></div>';
   html += '<div class="form-row">' + ACCOUNT_FIELDS.map(function(f){ return '<div class="form-group"><label>' + f.label + '</label><input type="number" id="acc_' + f.key + '" min="0" placeholder="' + f.ph + '"></div>'; }).join('') + '</div>';
-  html += '<div class="toolbar" style="margin-top:8px;"><button class="btn-primary" onclick="saveAccountSnapshot()">保存账号数据（' + accSelectedPlatform + '）</button></div>';
+  html += '<div class="toolbar" style="margin-top:8px;align-items:center;"><button class="btn-primary" onclick="saveAccountSnapshot()">保存账号数据（' + accSelectedPlatform + '）</button><span class="badge">今日 ' + getToday() + ' · 最新总数据</span></div>';
   html += '</div>';
 
   // 2. 各平台最新快照汇总（按「平台+账号」每行，取该账号最新一次记录）
   html += '<div class="card"><div class="card-title">各平台最新账号数据 <span class="badge">按账号最新快照</span></div>';
-  html += '<table class="data-table"><thead><tr><th>平台</th><th>账号</th><th>记录日期</th><th>发布量</th><th>粉丝量</th><th>总播放量</th><th>总点赞量</th><th>总评论量</th><th>总转发/分享</th></tr></thead><tbody>';
+  html += '<table class="data-table"><thead><tr><th>平台</th><th>账号</th><th>日期</th><th>发布</th><th>粉丝</th><th>播放</th><th>点赞</th><th>评论</th><th>转发/分享</th></tr></thead><tbody>';
   VIDEO_PLATFORMS.forEach(function(p) {
     var recs = accountIds.filter(function(x){ return x.platform === p; });
     var any = false;
@@ -584,13 +584,13 @@ function renderAccountData() {
       var group = g.items.sort(function(a,b){ return (b.date || '').localeCompare(a.date || ''); }).slice(0, 3);
       if (group.length === 0) return;
       html += '<div style="margin:6px 0 2px;"><span class="platform-tag video" style="display:inline-block;">' + escapeHtml(g.platform) + '</span> <span style="font-size:12px;font-weight:600;">' + escapeHtml(g.label) + '</span> <span style="font-size:11px;color:var(--text3);">最新 ' + group.length + ' 条</span></div>';
-      html += '<table class="data-table"><thead><tr><th>日期</th><th>发布</th><th>粉丝</th><th>播放</th><th>点赞</th><th>评论</th><th>转发/分享</th><th></th></tr></thead><tbody>';
+      html += '<table class="data-table"><thead><tr><th>日期</th><th>发布</th><th>粉丝</th><th>播放</th><th>点赞</th><th>评论</th><th>转发/分享</th><th style="text-align:right;"></th></tr></thead><tbody>';
       group.forEach(function(r) {
         var prev = accountPrevSnapshot(r);
         html += '<tr><td>' + escapeHtml(r.date) + '</td>';
         html += '<td>' + accountDeltaCell(r, prev, 'posts') + '</td><td>' + accountDeltaCell(r, prev, 'followers') + '</td><td>' + accountDeltaCell(r, prev, 'views') + '</td>';
         html += '<td>' + accountDeltaCell(r, prev, 'likes') + '</td><td>' + accountDeltaCell(r, prev, 'comments') + '</td><td>' + accountDeltaCell(r, prev, 'shares') + '</td>';
-        html += '<td style="white-space:nowrap;"><button class="btn-edit-mini" onclick="editAccountSnapshot(\'' + r.id + '\')">编辑</button> <button class="btn-delete-mini" onclick="deleteAccountSnapshot(\'' + r.id + '\')">删除</button></td></tr>';
+        html += '<td style="white-space:nowrap;text-align:right;"><button class="btn-edit-mini" onclick="editAccountSnapshot(\'' + r.id + '\')">编辑</button> <button class="btn-delete-mini" onclick="deleteAccountSnapshot(\'' + r.id + '\')">删除</button></td></tr>';
       });
       html += '</tbody></table>';
     });

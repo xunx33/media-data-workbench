@@ -275,6 +275,7 @@ let searchKeyword = '';
 let contentFilterType = '';
 let contentDateFilter = '';   // 内容登记日期筛选：''=全部 | today | yesterday | week | month
 let contentSortByViews = '';
+let contentPage = 1;             // 内容登记列表当前页码（每页 10 条）
 let contentFoldOpen = true;
 
 // 待办页 / 日历页：内容详情展开状态（key = "平台|日期"）

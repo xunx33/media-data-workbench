@@ -2,6 +2,8 @@
 let __parserCollapsed = (function(){
   return localStorage.getItem(STORAGE_KEY + 'tableParserCollapsed') === '1';
 })();
+// 解析表格当前选中平台（模块级状态：render 全页重绘时据此恢复选中项，避免被内容登记筛选触发的重绘重置回默认值）
+let __parserPlatform = VIDEO_PLATFORMS[0];
 function toggleParserFold() {
   __parserCollapsed = !__parserCollapsed;
   localStorage.setItem(STORAGE_KEY + 'tableParserCollapsed', __parserCollapsed ? '1' : '0');
@@ -20,11 +22,11 @@ function renderTableParser() {
 
   // 平台选择（仅 4 个短视频平台）；切换平台时刷新帮助说明 + 重检测暂存文件的匹配警告
   html += `<div class="form-group"><label>数据表所属平台</label><select id="parserPlatform" onchange="onParserPlatformChange()">
-    ${VIDEO_PLATFORMS.map(p => `<option value="${p}">${p}</option>`).join('')}
+    ${VIDEO_PLATFORMS.map(p => `<option value="${p}" ${p === __parserPlatform ? 'selected' : ''}>${p}</option>`).join('')}
   </select></div>`;
 
   // 格式说明（随平台切换）——渲染时直接生成，避免延迟填充造成的展开跳动
-  html += `<div class="form-group" id="parserHelp" style="font-size:12px;color:var(--text3);line-height:1.7;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;">${buildParserHelpHtml(VIDEO_PLATFORMS[0])}</div>`;
+  html += `<div class="form-group" id="parserHelp" style="font-size:12px;color:var(--text3);line-height:1.7;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;">${buildParserHelpHtml(__parserPlatform)}</div>`;
 
   // 文件上传
   html += `<div class="form-group"><label>上传表格文件</label>
@@ -89,8 +91,10 @@ function updateParserHelp() {
   if (help) help.innerHTML = buildParserHelpHtml(platform);
 }
 
-// 切换平台时：刷新帮助说明 + 重检测暂存文件的匹配警告（选对平台后警告自动消失）
+// 切换平台时：记录选中项 + 刷新帮助说明 + 重检测暂存文件的匹配警告（选对平台后警告自动消失）
 function onParserPlatformChange() {
+  const sel = document.getElementById('parserPlatform');
+  if (sel) __parserPlatform = sel.value;
   updateParserHelp();
   if (pendingParserRows) refreshPendingPreview();
 }
@@ -328,6 +332,9 @@ function parseSharedStrings(xml) {
 
 function decodeXml(s) {
   return s
+    // 数字字符引用：xlsx 单元格内换行存为 &#10;（LF）等，先于命名实体解码
+    .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCodePoint(parseInt(h, 16)); })
+    .replace(/&#(\d+);/g, function(_, d) { return String.fromCodePoint(parseInt(d, 10)); })
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
     .replace(/&amp;/g, '&');
@@ -561,7 +568,7 @@ async function parseTableRows(rows, type, platform) {
     const normDate = normalizeDate(date);
     if (!normDate || !platform) continue;
 
-    let title = colTitle >= 0 ? String(cells[colTitle] || '').trim() : '';
+    let title = colTitle >= 0 ? String(cells[colTitle] || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() : '';
     const titleEmpty = !title;   // 原表标题是否为空（占位标题无法唯一标识内容）
     // 空白标题 → 占位符「空标题」，保证内容与数据照常录入
     if (!title) title = platform === '小红书' ? '空标题' : (platform + ' ' + normDate + ' 作品');
@@ -803,11 +810,13 @@ function getFilteredContents() {
 function doSearch() {
   const input = document.getElementById('searchInput');
   searchKeyword = input ? input.value.trim() : '';
+  contentPage = 1;
   render();
 }
 
 function clearSearch() {
   searchKeyword = '';
+  contentPage = 1;
   const input = document.getElementById('searchInput');
   if (input) input.value = '';
   render();

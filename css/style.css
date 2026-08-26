@@ -513,6 +513,22 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 10px; color: var(--text3); transition: transform 0.2s var(--ease);
 }
 .content-fold-body { padding: 0 12px 12px; }
+/* 登记列表分页控件 */
+.content-pagination {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
+  padding: 10px 12px 2px;
+}
+.page-btn {
+  min-width: 26px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+  color: var(--text2); background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  transition: all 0.2s var(--ease);
+}
+.page-btn:hover:not(:disabled):not(.active) { border-color: var(--accent); color: var(--text); transform: translateY(-1px); }
+.page-btn:disabled { opacity: 0.4; cursor: default; }
+.page-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.page-info { font-size: 11px; color: var(--text3); margin-left: 4px; }
+.page-ellipsis { font-size: 12px; color: var(--text3); padding: 0 2px; }
 /* AI 大模型配置卡 / 解析数据表格卡 收起展开箭头：胶囊圆底 + 同一箭头旋转区分状态（收起=右转90°，展开=▼），更醒目 */
 #llmConfigToggle, #parserToggle {
   display: inline-flex; align-items: center; justify-content: center;
@@ -901,7 +917,7 @@ a { color: var(--accent); text-decoration: none; }
 }
 .trend-label { font-size: 12px; color: var(--text3); }
 .trend-compare-group { display: inline-flex; align-items: center; gap: 5px; }
-.trend-compare-label { font-size: 12px; color: var(--text2); }
+.trend-compare-label { font-size: 10px; color: var(--text2); }
 .trend-up { font-size: 12px; color: var(--green); font-weight: 600; }
 .trend-down { font-size: 12px; color: var(--red); font-weight: 600; }
 .trend-flat { font-size: 12px; color: var(--text2); font-weight: 600; }
@@ -1375,32 +1391,6 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 10px; font-weight: 600; margin-left: 2px; white-space: nowrap;
 }
 
-
-/* ===== 账号总数据：平台按钮式选择（标题右侧） ===== */
-.platform-pill {
-  margin-left: auto;
-  display: inline-flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.platform-pill .pill {
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: var(--bg-2);
-  color: var(--text2);
-  cursor: pointer;
-  font-weight: 500;
-  transition: all .15s;
-}
-.platform-pill .pill:hover { border-color: var(--accent); color: var(--accent); }
-.platform-pill .pill.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
-}
 
 /* ===== 内容登记：平台筛选下拉 ===== */
 .filter-select {

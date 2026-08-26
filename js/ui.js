@@ -170,13 +170,13 @@ function statCardHtml(value, label, extraHtml) {
 // 环比增长标签：绿色（增长）/ 红色（下降），显示百分比；本期或上期为 0 时不显示（放 ui.js 供 overview/data 共用）
 function renderGrowthTag(cur, prev) {
   if (!prev && !cur) return '';
-  if (!prev) return cur > 0 ? '<span class="stat-change up">新增</span>' : '';
-  if (!cur) return prev > 0 ? '<span class="stat-change down">-100%</span>' : '';
+  if (!prev) return cur > 0 ? '<span class="stat-change up">环比新增</span>' : '';
+  if (!cur) return prev > 0 ? '<span class="stat-change down">环比-100%</span>' : '';
   const pct = ((cur - prev) / prev) * 100;
-  if (pct === 0) return '<span class="stat-change flat">0%</span>';
+  if (pct === 0) return '<span class="stat-change flat">环比0%</span>';
   const cls = pct > 0 ? 'up' : 'down';
   const sign = pct > 0 ? '+' : '';
-  return '<span class="stat-change ' + cls + '">' + sign + Math.round(pct) + '%</span>';
+  return '<span class="stat-change ' + cls + '">环比' + sign + Math.round(pct) + '%</span>';
 }
 
 // ===== 数据看板入场动画（渲染完成后由 app.js render() 统一调度）=====
