@@ -179,7 +179,7 @@ const server = http.createServer(async (req, res) => {
 // 成功：200 + video/mp4 二进制；ffmpeg 未安装：503 {error}；压缩失败：500 {error}
 const ffmpegAvailable = (() => {
   try {
-    const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 10000 });
+    const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     return r.error ? false : true;
   } catch (e) { return false; }
 })();

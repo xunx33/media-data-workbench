@@ -39,7 +39,7 @@ async function waitPortBusy(port, maxMs = 8000) {
 // 用 netstat 查占用端口的 PID（Windows）
 function getPortPid(port) {
   try {
-    const out = execSync(`netstat -ano | findstr ":${port} " | findstr LISTENING`, { encoding: 'utf8' });
+    const out = execSync(`netstat -ano | findstr ":${port} " | findstr LISTENING`, { encoding: 'utf8', windowsHide: true });
     const m = out.match(/LISTENING\s+(\d+)/);
     return m ? parseInt(m[1]) : null;
   } catch (e) { return null; }
@@ -50,7 +50,7 @@ function getProcessName(pid) {
   try {
     const out = execSync(
       'powershell.exe -NoProfile -Command "(Get-Process -Id ' + pid + ' -ErrorAction SilentlyContinue).ProcessName"',
-      { encoding: 'utf8' }
+      { encoding: 'utf8', windowsHide: true }
     );
     const name = out.trim();
     return name || null;

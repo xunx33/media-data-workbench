@@ -986,6 +986,8 @@ a { color: var(--accent); text-decoration: none; }
 .btn-save:hover { background: #2196F3; }
 .btn-danger { background: var(--red); color: #fff; border: none; border-radius: var(--radius-xs); }
 .btn-danger:hover { background: #e4876f; }
+.llm-actions .btn-outline { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+.llm-actions .btn-outline:hover { background: var(--card2-solid); color: var(--text); border-color: var(--border-strong); }
 
 /* ===== AI 大模型配置页 ===== */
 .llm-page { display: flex; flex-direction: column; gap: 16px; }
