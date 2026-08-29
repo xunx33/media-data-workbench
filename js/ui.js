@@ -5,7 +5,6 @@ function formatNum(n) {
 }
 
 // ===== MODAL =====
-let pendingLinkTaskId = null;
 // 登记弹窗平台下拉：仅 4 个短视频平台
 function platformOptions(selected) {
   const list = VIDEO_PLATFORMS;
@@ -16,7 +15,6 @@ function platformOptions(selected) {
 
 function openAddModal(prefillPlatform, taskId, prefillDate) {
   editId = null;
-  pendingLinkTaskId = taskId || null;
   const preP = prefillPlatform || VIDEO_PLATFORMS[0];
   const preD = prefillDate || getToday();
   document.getElementById('modalContent').innerHTML = `
@@ -102,7 +100,6 @@ async function saveContent() {
     contents.push({ id: savedId, title, platform, topic, url, createdAt: date });
   }
   await saveData('contents', contents); closeModal();
-  pendingLinkTaskId = null;
   render();
   showToast(editId ? '已更新' : '已登记');
 }
@@ -125,7 +122,6 @@ function showConfirm({ title, desc, danger = false, okText, onOk }) {
 
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
-  pendingLinkTaskId = null;
 }
 // 弹窗退出方式：仅「取消」按钮或键盘ESC；点击空白处不关闭
 document.addEventListener('keydown', function(e) {
@@ -140,17 +136,14 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     currentTab = tab.dataset.tab;
-    // 数据复盘子页固定为视频数据
-    if (currentTab === 'data') dataSubTab = 'video';
+    // 数据复盘子页固定为视频数据（现仅视频工作台，无子分区切换）
     if (currentTab === 'calendar' && !selectedDate) selectedDate = getToday();
     // 切换 tab 时重置 AI busy 标志（避免切回来后按钮点不动）
-    resetAiBusyFlags();
     render();
   });
 });
 
-// ===== WORKSPACE 分区同步（已无下拉框，仅保留入口供启动调用） =====
-function syncWorkspaceUI() {}
+// ===== WORKSPACE（已无分区下拉，逻辑并入导航与 switchWorkspace） =====
 
 // ===== TOAST =====
 function showToast(msg) {

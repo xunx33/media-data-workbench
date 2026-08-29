@@ -1,12 +1,12 @@
 # 新媒体数据工作台
 
-> **当前版本：v3.4.0** — 精简为纯短视频平台工具：整体移除文书工作台（内容登记、账号登记、AI 收录、文书复盘等全部文书功能与数据），导航改为「短视频工作台 + AI功能按钮」，专注 4 个短视频平台的内容登记、数据录入、复盘分析、AI 智能分析与账号管理。
+> **当前版本：v3.5.0** — 新增全局深色模式（顶栏一键切换、跟随系统偏好）；服务端安全加固（路径穿越拦截、接口校验、API Key 脱敏、可选令牌认证）；新增 **nginx 多用户部署模式**（每人一个账号、数据按用户隔离、写入审计）；移除 AI 拆解二创专家功能；一批数据一致性与显示修复。
 
 覆盖 **4 个短视频平台（抖音 / 快手 / 小红书 / 视频号）** 的内容登记、数据录入、复盘分析、AI 智能分析与账号管理一体化工具。
 
 适合新媒体运营人员每天使用：登记发布了什么 → 录入平台数据 → 查看趋势与复盘 → AI 自动分析 → 导出汇报。
 
-**技术亮点：零第三方依赖**——后端仅用 Node.js 内置模块（http/fs/path），前端不引入任何第三方库，安装 Node.js 即可运行。
+**技术亮点：零第三方依赖**——后端仅用 Node.js 内置模块，前端不引入任何第三方库，安装 Node.js 即可运行。
 
 ---
 
@@ -25,7 +25,8 @@
 
 ### 核心能力
 
-- **AI 大模型接入**：配置 OpenAI 兼容接口（DeepSeek/豆包/千问/文心等），支持 AI 视频文案专家、AI 数据分析专家，每日额度管理（chat/review 独立计数，每类每日 20 次上限）
+- **AI 大模型接入**：配置 OpenAI 兼容接口（DeepSeek/豆包/千问/文心等），支持 AI 视频文案专家、AI 数据分析专家，每日额度管理（chat/review 独立计数，每类每日 20 次上限；取消/失败自动退还）
+- **深色模式**：顶栏 🌙/☀️ 一键切换，首次访问自动跟随系统偏好，选择持久保存，PWA 状态栏颜色同步
 - **AI 数据分析专家**：选择总结周期，自动汇总数据，调用大模型生成结构化分析报告（账号表现/亮点/问题/建议），支持导出 HTML 报表
 - **表格一键解析**：上传平台导出的数据表（xlsx/csv/tsv/txt），自动识别列并录入数据；小红书空标题笔记自动占位；非平台表格会被自动拦截
 - **数据自动关联**：内容登记 ↔ 平台数据 ↔ 发布日历 相互关联，录一次数据全站联动
@@ -71,9 +72,8 @@
 
 ```
 桌面快捷方式「新媒体数据工作台」
-  └─ 指向 Start.bat（一键启动脚本）
-       ├─ 调用 start-hidden.vbs → 后台隐藏运行 node start-ui.js（自动检测端口、后台拉起服务，无窗口、不占用命令行）
-       └─ 等待服务就绪 → 用默认浏览器打开 http://localhost:3000（跟随 PORT 环境变量）
+  └─ 由 wscript.exe 直接调用 start-hidden.vbs → 后台隐藏运行 node start-ui.js（自动检测端口、后台拉起服务，无窗口、不占用命令行）
+     └─ 等待服务就绪 → 用默认浏览器打开 http://localhost:3000（跟随 PORT 环境变量）
 ```
 
 > 服务会一直在后台运行（不占用任何窗口）。关掉浏览器页面**不影响服务**，数据照常保存；再次双击快捷方式即可重新打开页面。
@@ -98,6 +98,21 @@ node server.js
 ### 安装为桌面应用
 
 浏览器打开工作台 → 地址栏右侧「安装」图标 → 安装「新媒体数据工作台」。之后可从桌面图标直接打开，离线可用。
+
+### 部署到服务器（多人使用，数据按用户隔离）
+
+需要给团队多人使用时，推荐 **nginx（登录认证）+ Node（数据服务）** 架构，完整示例见 `deploy/nginx.conf.example`：
+
+1. 服务器上启动（Node 只监听本机，外部无法绕过 nginx）：
+   ```bat
+   set MCB_MULTIUSER=1
+   set MCB_ALLOWED_HOSTS=你的域名或IP
+   node server.js
+   ```
+2. nginx 开启 `auth_basic`，用 htpasswd 给每个同事建独立账号，并把登录名传给后端（`proxy_set_header X-Remote-User $remote_user;`）
+3. 数据按登录用户分目录存放（`data/users/<账号>/`），同事之间数据完全隔离；AI 大模型 Key 全局共享一份（配置一次全员可用，且不会下发到任何浏览器）
+
+审计：nginx access.log 记录每次访问的账号；`data/activity.log` 记录谁在什么时间写了什么数据、谁调用了 AI。
 
 ---
 
@@ -177,7 +192,7 @@ node server.js
 
 ## 五、数据与备份
 
-工作台所有数据保存在项目目录 **`data/` 文件夹**（5 类数据：内容登记、视频数据、复盘记录、账号数据、账号 ID）。
+工作台所有数据保存在项目目录 **`data/` 文件夹**：核心 5 类（内容登记、视频数据、复盘记录、账号数据、账号 ID），外加 AI 配置（llmConfig.json，含 Key，全局）、AI 每日额度（llmQuota.json）、审计日志（activity.log）；每次覆盖写入前自动轮转一份 `.bak` 上一版备份，导入备份前也会自动存一份 `import_snapshot_*.json` 快照。多用户模式下核心数据在 `data/users/<账号>/` 下按人隔离。
 
 | 备份方式 | 适用场景 |
 |---|---|
@@ -192,21 +207,27 @@ node server.js
 
 ### 零依赖设计
 
-- **后端**（`server.js`）：Node.js 内置模块实现静态文件服务 + JSON 数据读写 API
-  - `GET  /api/data/{key}`：读取数据（不存在返回 `[]`）
-  - `POST /api/data/{key}`：单键写入（**原子写**：先写临时文件再 rename 替换，中途关窗不留半截文件）
+- **后端**（`server.js`）：Node.js 内置模块实现静态文件服务 + JSON 数据读写 API + LLM 转发代理
+  - `GET  /api/data/{key}`：读取数据（不存在返回 `[]`；llmConfig 脱敏只返回 `hasKey` 标记，不返回 Key）
+  - `POST /api/data/{key}`：单键写入（**原子写 + .bak 轮转 + 全局写队列串行**，多请求/多用户并发不交错）
   - `POST /api/data/batch`：批量写入（**两阶段提交 + 失败回滚**：先全部写 tmp、再全部 rename；中途失败时已替换文件用旧内容还原、未替换的删 tmp，尽量保持跨文件一致）
+  - `POST /api/llm/chat`：大模型代理转发（请求缺 Key 时自动用服务端保存的配置兜底）
+  - `GET  /api/me`：当前登录用户（多用户模式）
   - **缓存自动刷新**：js/css 按内容计算哈希指纹自动注入 `?v=`，改代码后浏览器必然拿到新文件，无需手动维护版本号；带指纹资源配 `immutable` 长缓存，`index.html` 走 `no-cache`
 - **前端**：原生 JS + CSS，无框架、无构建、无 npm 依赖
 
 ### 安全设计
 
-- **默认仅本机访问**：服务默认绑定 `127.0.0.1`，同一 WiFi 下的其他设备默认无法访问你的数据与 AI 配置；确需手机/远程访问时，以环境变量 `MCB_LAN=1` 启动才监听局域网
-- **XSS 防御**：所有用户输入统一经 `escapeHtml()` 转义（含引号）；链接经 `safeUrl()` 仅放行 http/https；自动化回归测试验证运行时渲染安全
-- **路径安全**：静态文件服务拒绝路径穿越（含 `..` 片段）、禁止直接访问 `data/` 目录（数据只走 API）
+- **默认仅本机访问**：服务默认绑定 `127.0.0.1`；确需外部访问时用 `MCB_LAN=1`（个人临时用）或按上节走 nginx 多用户架构（团队用）
+- **静态服务穿越防护**：拒绝 `..` 片段与反斜杠/编码变体（`%5C`、`%2e%2e`），`path.resolve` 归一化后二次断言仍在项目内；`data/` 目录禁止直接访问，数据只走 API
+- **接口校验**：Host 白名单（`MCB_ALLOWED_HOSTS`，防 DNS rebinding）；写接口强制 `Content-Type: application/json`（免疫表单 CSRF）+ 请求体大小上限（数据 10MB / LLM 2MB）
+- **访问令牌（可选）**：设置 `ACCESS_TOKEN` 环境变量后全站需登录（内置登录页，Cookie HttpOnly + SameSite=Strict）
+- **多用户身份**：`MCB_MULTIUSER=1` 时信任 nginx 注入的 `X-Remote-User`，按用户隔离数据并写入审计日志
+- **XSS 防御**：所有用户输入统一经 `escapeHtml()` 转义（含引号）；链接经 `safeUrl()` 仅放行 http/https；AI 返回文本不进入内联事件；自动化回归测试以恶意输入跑真实渲染函数验证
+- **数据保护**：核心数据加载失败时禁止写入（防止空数据覆盖磁盘真实数据）；导入备份自动清洗 id 字段并存导入前快照
+- **API Key 安全**：Key 只存服务端 `data/llmConfig.json`，读取接口脱敏（只有 `hasKey` 标记），页面从不渲染真实 Key，编辑留空=保持原 Key
 - **保存失败提示**：数据写入失败不再静默，页面顶部会显示警告横幅，直到下次保存成功
-- **乱码检测**：导入后自动扫描关键文本字段，识别 U+FFFD 乱码并提示
-- **API Key 安全**：页面从不渲染真实 Key，编辑留空=保持原 key，密码框输入
+- **响应头**：统一 `X-Content-Type-Options: nosniff`，杜绝 MIME 嗅探
 
 ### 手写 xlsx 解析
 
@@ -223,12 +244,12 @@ Service Worker 采用「数据请求永远走网络 + 静态资源 stale-while-r
 ```
 media-data-workbench/
 ├── index.html              # 入口页面（6 页 SPA）
-├── css/style.css           # 样式（浅蓝主题，CSS 变量）
+├── css/style.css           # 样式（浅色/深色双主题，CSS 变量）
 ├── js/
 │   ├── app.js              # 应用入口 / 视图切换
-│   ├── store.js            # 数据读写 / 原子保存 / 版本迁移
-│   ├── ui.js               # 通用 UI 工具 / 弹窗 / 格式化
-│   ├── export.js           # 导出（Excel 报表 / JSON 备份 / 导入恢复）
+│   ├── store.js            # 数据读写 / 原子保存 / 指标口径基准 / 版本迁移
+│   ├── ui.js               # 通用 UI 工具 / 弹窗 / 深色模式切换 / 格式化
+│   ├── export.js           # 导出（Excel 报表 / JSON 备份 / 导入恢复+快照）
 │   ├── llm.js              # AI 大模型（配置/生成视频描述/数据总结分析/导出 HTML）
 │   ├── sample-migration.js # 示例数据与版本迁移
 │   └── views/              # 6 个页面视图
@@ -238,17 +259,21 @@ media-data-workbench/
 │       ├── calendar.js     # 发布日历（含法定节假日）
 │       ├── overview.js     # 发布总览（月度汇总/饼图/平台明细）
 │       └── table-parser.js # 表格解析引擎（xlsx/csv/tsv）
-├── server.js               # Node 后端（静态服务 + 数据 API）
+├── server.js               # Node 后端（静态服务 + 数据 API + LLM 代理 + 认证/多用户）
 ├── start-ui.js             # 启动器（端口检测 / 后台拉起服务）
 ├── sw.js                   # Service Worker（PWA 离线）
 ├── manifest.webmanifest    # PWA 清单
-├── Start.bat               # 一键启动（静默版：VBS 隐藏启动服务，桌面快捷方式指向它）
-├── start-hidden.vbs        # 隐藏启动 node 的 VBS 脚本（Start.bat 调用，勿动）
+├── Start.bat               # 一键启动（静默版：VBS 隐藏启动服务）
+├── start-hidden.vbs        # 隐藏启动 node 的 VBS 脚本（桌面快捷方式直接调用它）
 ├── ViewStart.bat           # 启动（诊断版：前台运行，日志可见，Ctrl+C 停止）
 ├── CreateShortcut.bat      # 一键生成桌面快捷方式（无需装任何东西，双击即用，不会乱码）
+├── deploy/nginx.conf.example # nginx 多用户部署配置示例（auth_basic + X-Remote-User）
 ├── icons/                  # 应用图标（app.ico / icon-192.png / icon-512.png）
-├── data/                   # 【你的数据】5 类数据文件（备份时带它）
-└── tests/run.js            # 自动化回归测试（开发用）
+├── data/                   # 【你的数据】核心 5 类 + AI 配置/额度 + 审计日志（备份时带它）
+└── tests/                  # 自动化回归测试（开发用）
+    ├── run.js              # 安全函数 / XSS 渲染（含 AI 页）/ 导出导入一致性
+    ├── smoke-charts.js     # 图表渲染冒烟
+    └── server-security.js  # 服务端安全（穿越/认证/脱敏/多用户隔离）
 ```
 
 > 日常使用只需认识：桌面快捷方式「新媒体数据工作台」（启动）、`data/`（数据）、`CreateShortcut.bat`（生成/重建桌面快捷方式）。
@@ -258,15 +283,20 @@ media-data-workbench/
 ## 八、开发与测试
 
 ```bash
-# 运行回归测试（安全函数 / XSS 渲染 / 导出导入一致性）
-node tests/run.js
+npm test
+# 等价于依次运行：
+#   node tests/run.js             # 安全函数 / XSS 渲染（含 AI 页）/ 导出导入一致性
+#   node tests/smoke-charts.js    # 图表渲染冒烟
+#   node tests/server-security.js # 服务端安全（穿越/Host/认证/llmConfig 脱敏/多用户隔离，自动起真实实例）
 ```
 
 测试覆盖：
 1. 安全核心函数（escapeHtml / safeUrl / 乱码检测）
-2. 运行时 XSS 渲染（恶意输入必须被转义）
+2. 运行时 XSS 渲染（恶意输入喂给真实渲染函数，含 AI 配置页与文案结果）
 3. 导出/导入 JSON 字段对称
-4. 导出报表复盘记录栏（有视频复盘显示、无复盘不显示、报表不含文书内容）
+4. 导出报表复盘记录栏
+5. 图表动画标记冒烟（数字滚动/柱形/饼图/折线）
+6. 服务端安全（29+ 项：路径穿越各变体、Host 白名单、Content-Type 强制、令牌认证流程、llmConfig 脱敏与「留空保留 Key」、多用户数据隔离与迁移、审计日志）
 
 ---
 

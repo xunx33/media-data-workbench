@@ -36,8 +36,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       try {
         const res = await fetch(req);
-        const cache = await caches.open(CACHE);
-        cache.put(req, res.clone());
+        // 只缓存成功的响应：瞬时 5xx 被缓存成"离线壳"后，断网降级拿到的就是错误页
+        if (res && res.ok) {
+          const cache = await caches.open(CACHE);
+          cache.put(req, res.clone());
+        }
         return res;
       } catch (e) {
         const cached = await caches.match(req) || await caches.match('/index.html');
@@ -47,14 +50,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 静态资源：stale-while-revalidate
+  // 静态资源：stale-while-revalidate（网络失败且无缓存时返回统一离线兜底，避免 respondWith 报网络错误）
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(req);
     const network = fetch(req).then((res) => {
       if (res && res.status === 200) cache.put(req, res.clone());
       return res;
-    }).catch(() => cached);
-    return cached || network;
+    }).catch(() => null);
+    return cached || await network || new Response('离线且无本地缓存', { status: 503, statusText: 'Offline' });
   })());
 });

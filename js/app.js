@@ -79,8 +79,7 @@ function checkWeeklyReminder() {
     const el = document.getElementById('currentUser');
     if (el && m && m.user) { el.textContent = '👤 ' + m.user; el.style.display = ''; }
   }).catch(() => {});
-  // 启动时同步分区 UI
-  if (window.syncWorkspaceUI) window.syncWorkspaceUI();
+  // 启动时同步分区 UI（多用户/工作台逻辑已简化为仅短视频工作台 + AI 页）
   render();
   checkBackupReminder();
   checkWeeklyReminder();
