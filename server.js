@@ -1,22 +1,35 @@
-// ===== 本地数据服务 =====
-// 功能：静态文件服务 + JSON 数据读写 API（替代 localStorage）
+// ===== 数据服务（本机 / 内网部署两用） =====
+// 功能：静态文件服务 + JSON 数据读写 API（替代 localStorage）+ LLM 代理
 // 端口：3000（可用环境变量 PORT 覆盖）
-// 存储：./data/*.json（每个 key 一个文件）
-// 依赖：仅 Node.js 内置模块（http/fs/path）
+// 存储：./data/*.json（每个 key 一个文件，写入均原子替换并轮转 .bak 备份）
+// 依赖：仅 Node.js 内置模块
+//
+// 安全模型（部署到服务器给多人使用时务必阅读）：
+//  - 默认绑定 127.0.0.1 仅本机可访问；需要外部访问时设 MCB_LAN=1（或用反向代理），
+//    并强烈建议同时设置 ACCESS_TOKEN 开启访问令牌，否则任何能连到端口的人都可读写全部数据。
+//  - ACCESS_TOKEN=xxx 时全站需认证：浏览器访问 /__login 输入令牌（存 HttpOnly+SameSite=Strict Cookie，
+//    跨站请求不携带 → 同时免疫 CSRF）；也可用 ?token=xxx 或 Authorization: Bearer xxx。
+//  - MCB_ALLOWED_HOSTS：允许的 Host 头列表（逗号分隔，默认 localhost,127.0.0.1），
+//    防御 DNS rebinding；服务器部署时设为对外域名/IP。
+//  - LLM 的 API Key 只存服务端 data/llmConfig.json，GET 接口只返回脱敏结果（hasKey 标记），
+//    /api/llm/chat 请求缺 key 时自动用服务端保存的配置兜底 → 同事浏览器无需配置即可用 AI。
 
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const os = require('os');
-const { spawn, spawnSync } = require('child_process');
 
 const PORT = process.env.PORT || 3000;
-// 安全：默认仅本机可访问（绑定 127.0.0.1），避免局域网内任意设备读写数据 / 窃取 LLM 配置。
-// 需要手机 / 局域网访问时，以环境变量 MCB_LAN=1 启动才会监听所有网卡。
+// 安全：默认仅本机可访问（绑定 127.0.0.1）；MCB_LAN=1 时监听所有网卡（部署时建议配合 ACCESS_TOKEN）
 const HOST = process.env.MCB_LAN === '1' ? undefined : '127.0.0.1';
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
+const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const DATA_DIR = path.join(__dirname, 'data');
+// 各写接口请求体上限
+const LIMIT_DATA = 10 * 1024 * 1024;   // 单 key / batch 写入
+const LIMIT_LLM = 2 * 1024 * 1024;     // LLM 消息体
 
 // 首次启动自动创建数据目录
 if (!fs.existsSync(DATA_DIR)) {
@@ -70,242 +83,393 @@ const MIME = {
   '.webmanifest': 'application/manifest+json'
 };
 
+// ===== 通用辅助 =====
+
+// 恒定时间字符串比较（令牌校验用，避免时序侧信道）
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a || ''));
+  const bb = Buffer.from(String(b || ''));
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+function parseCookies(req) {
+  const out = {};
+  const raw = req.headers.cookie || '';
+  raw.split(';').forEach(pair => {
+    const i = pair.indexOf('=');
+    if (i > 0) out[pair.slice(0, i).trim()] = decodeURIComponent(pair.slice(i + 1).trim());
+  });
+  return out;
+}
+
+function isJsonContentType(req) {
+  const ct = String(req.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+  return ct === 'application/json';
+}
+
+// 读请求体，超限直接 413 并返回 null（调用方据此终止）
+function readBody(req, res, limit) {
+  return new Promise(resolve => {
+    const chunks = [];
+    let size = 0, done = false;
+    req.on('data', c => {
+      if (done) return;
+      size += c.length;
+      if (size > limit) {
+        done = true;
+        res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('413 Payload Too Large');
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => { if (!done) { done = true; resolve(Buffer.concat(chunks)); } });
+    req.on('error', () => { if (!done) { done = true; resolve(null); } });
+  });
+}
+
+// ===== 写入：全局串行 + 原子替换 + .bak 轮转 =====
+// 所有写（单 key 与 batch）进同一条 promise 链串行执行，杜绝多请求/多用户并发交错；
+// tmp 文件名带随机后缀，避免共享固定 .tmp 路径被并发写坏；rename 前把旧文件复制为 .bak（保留一代）。
+let writeChain = Promise.resolve();
+function enqueueWrite(fn) {
+  const run = writeChain.catch(() => {}).then(fn);
+  writeChain = run;
+  return run;
+}
+function uniqueTmp(target) {
+  return target + '.' + process.pid + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
+}
+function atomicWrite(target, content) {
+  const tmp = uniqueTmp(target);
+  fs.writeFileSync(tmp, content);
+  try { if (fs.existsSync(target)) fs.copyFileSync(target, target + '.bak'); } catch (e) { /* 备份失败不阻塞写入 */ }
+  fs.renameSync(tmp, target);
+}
+function readDataFile(key) {
+  const p = path.join(DATA_DIR, key + '.json');
+  try { return fs.readFileSync(p, 'utf-8'); } catch (e) { return null; }
+}
+
+// llmConfig 写入预处理：apiKey 为空字符串 = 保留已存 Key（页面从不回显真实 Key）；
+// 空对象（清空配置）则整体清除；hasKey 永不落盘（由 GET 动态计算）
+function prepareLlmConfigWrite(rawText) {
+  let val;
+  try { val = JSON.parse(rawText); } catch (e) { return rawText; }
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return rawText;
+  if (val.apiKey === '') {
+    try {
+      const old = JSON.parse(readDataFile('llmConfig') || 'null');
+      if (old && typeof old.apiKey === 'string') val.apiKey = old.apiKey;
+    } catch (e) { /* 旧配置不存在则无法保留 */ }
+  }
+  delete val.hasKey;
+  return JSON.stringify(val);
+}
+
+// llmConfig 读取脱敏：永不返回 apiKey，仅以 hasKey 标记是否已配置
+function maskLlmConfig(rawText) {
+  let obj;
+  try { obj = JSON.parse(rawText || '{}'); } catch (e) { return {}; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+  const masked = Object.assign({}, obj);
+  masked.hasKey = typeof masked.apiKey === 'string' && masked.apiKey.length > 0;
+  delete masked.apiKey;
+  return masked;
+}
+
+// ===== 登录页（仅 ACCESS_TOKEN 模式使用） =====
+const LOGIN_PAGE = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>访问验证</title></head>' +
+  '<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;' +
+  'min-height:100vh;margin:0;background:#0e1a28;color:#e8f1fa;">' +
+  '<form method="POST" action="/__login" style="background:#152739;padding:32px;border-radius:14px;' +
+  'box-shadow:0 8px 28px rgba(0,0,0,.45);width:280px;">' +
+  '<h2 style="margin:0 0 8px;font-size:18px;">新媒体数据工作台</h2>' +
+  '<p style="margin:0 0 16px;font-size:12px;color:#7e9ab5;">请输入访问令牌</p>' +
+  '__ERR__' +
+  '<input type="password" name="token" autofocus required placeholder="访问令牌" ' +
+  'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #224262;' +
+  'background:#0e1a28;color:#e8f1fa;font-size:14px;margin-bottom:12px;">' +
+  '<button type="submit" style="width:100%;padding:10px;border:none;border-radius:8px;' +
+  'background:#4aa3ea;color:#071422;font-weight:600;font-size:14px;cursor:pointer;">进入</button>' +
+  '</form></body></html>';
+
+function loginPage(err) {
+  return LOGIN_PAGE.replace('__ERR__', err
+    ? '<p style="margin:0 0 12px;font-size:12px;color:#ef7b5a;">令牌错误，请重试</p>'
+    : '');
+}
+
 const server = http.createServer(async (req, res) => {
+  // 统一加 nosniff，杜绝浏览器对响应内容做 MIME 嗅探
+  const _writeHead = res.writeHead.bind(res);
+  res.writeHead = (code, headers) => _writeHead(code, Object.assign({ 'X-Content-Type-Options': 'nosniff' }, headers));
+
   try {
     const url = req.url.split('?')[0]; // 去掉 query string
 
-    // API：GET /api/data/{key} → 读取
+    // 安全：Host 白名单（防御 DNS rebinding；部署时用 MCB_ALLOWED_HOSTS 加上对外域名/IP）
+    const hostName = String(req.headers.host || '').split(':')[0].trim().toLowerCase();
+    if (!hostName || !ALLOWED_HOSTS.includes(hostName)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+
+    // 安全：访问令牌（设置 ACCESS_TOKEN 环境变量后启用；/__login 本身豁免）
+    if (ACCESS_TOKEN) {
+      if (url === '/__login') {
+        if (req.method === 'POST') {
+          const body = await readBody(req, res, 4096);
+          if (body === null) return;
+          const m = String(body).match(/(^|&)token=([^&]*)/);
+          const supplied = m ? decodeURIComponent(m[2].replace(/\+/g, ' ')) : '';
+          if (supplied && safeEqual(supplied, ACCESS_TOKEN)) {
+            res.writeHead(302, {
+              'Set-Cookie': 'mcb_token=' + encodeURIComponent(ACCESS_TOKEN) +
+                '; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000',
+              'Location': '/'
+            });
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(loginPage(true));
+          }
+          return;
+        }
+        // GET /__login：已带正确令牌则直接进首页
+        if (safeEqual(parseCookies(req).mcb_token, ACCESS_TOKEN)) {
+          res.writeHead(302, { 'Location': '/' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(loginPage(false));
+        return;
+      }
+      // 令牌来源优先级：Cookie → Authorization: Bearer → ?token=
+      const q = req.url.split('?')[1] || '';
+      const qToken = (q.match(/(^|&)token=([^&]*)/) || [])[2];
+      const supplied = parseCookies(req).mcb_token ||
+        String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
+        (qToken ? decodeURIComponent(qToken) : '');
+      if (!supplied || !safeEqual(supplied, ACCESS_TOKEN)) {
+        if (url.startsWith('/api/')) {
+          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: { message: '未认证' } }));
+        } else {
+          res.writeHead(302, { 'Location': '/__login' });
+          res.end();
+        }
+        return;
+      }
+    }
+
+    // API：GET /api/data/{key} → 读取（llmConfig 脱敏，不返回 apiKey）
     if (req.method === 'GET' && url.startsWith('/api/data/')) {
       const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
-      const filePath = path.join(DATA_DIR, key + '.json');
-      if (fs.existsSync(filePath)) {
-        res.writeHead(200, { 'Content-Type': MIME['.json'] });
-        res.end(fs.readFileSync(filePath, 'utf-8'));
-      } else {
-        // 文件不存在 → 返回空数组
-        res.writeHead(200, { 'Content-Type': MIME['.json'] });
-        res.end('[]');
+      if (!key) { res.writeHead(400); res.end('Invalid key'); return; }
+      const raw = readDataFile(key);
+      const text = key === 'llmConfig'
+        ? JSON.stringify(maskLlmConfig(raw))
+        : (raw !== null ? raw : '[]');
+      res.writeHead(200, { 'Content-Type': MIME['.json'] });
+      res.end(text);
+      return;
+    }
+
+    // API：POST /api/data/{key} → 写入（排队串行 + 原子替换 + .bak 轮转）
+    if (req.method === 'POST' && url.startsWith('/api/data/') && url !== '/api/data/batch') {
+      const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
+      if (!key) { res.writeHead(400); res.end('Invalid key'); return; }
+      if (!isJsonContentType(req)) {
+        res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('415 Unsupported Media Type');
+        return;
+      }
+      const body = await readBody(req, res, LIMIT_DATA);
+      if (body === null) return;
+      try { JSON.parse(String(body)); } catch (e) {
+        res.writeHead(400); res.end('Invalid JSON'); return;
+      }
+      const content = key === 'llmConfig' ? prepareLlmConfigWrite(String(body)) : String(body);
+      const target = path.join(DATA_DIR, key + '.json');
+      try {
+        await enqueueWrite(() => atomicWrite(target, content));
+        res.writeHead(200); res.end('OK');
+      } catch (e) {
+        console.error('写入失败:', key, e && e.message);
+        res.writeHead(500); res.end('Write failed');
       }
       return;
     }
 
-    // API：POST /api/data/{key} → 写入（原子写：先写临时文件再 rename 替换）
-    if (req.method === 'POST' && url.startsWith('/api/data/') && url !== '/api/data/batch') {
-      const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try { JSON.parse(body); } catch (e) {
-          res.writeHead(400); res.end('Invalid JSON'); return;
-        }
-        const target = path.join(DATA_DIR, key + '.json');
-        const tmp = target + '.tmp';
-        try {
-          fs.writeFileSync(tmp, body);
-          fs.renameSync(tmp, target); // 原子替换，中途关窗不会留半截文件
-          res.writeHead(200); res.end('OK');
-        } catch (e) {
-          res.writeHead(500); res.end('Write failed');
-        }
-      });
-      return;
-    }
-
-    // API：POST /api/data/batch → 批量写入（两阶段提交 + 失败回滚）
+    // API：POST /api/data/batch → 批量写入（两阶段提交 + 失败回滚，进同一写队列串行）
     // 请求体：[{ "key": "contents", "val": [...] }, ...]
     // 第一阶段：全部写 tmp；第二阶段：逐个 rename 替换。
     // 中途失败时：已替换文件用旧内容还原（原不存在则删除）、未替换的删 tmp，尽量保持跨文件一致
     if (req.method === 'POST' && url === '/api/data/batch') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        let updates;
-        try { updates = JSON.parse(body); } catch (e) {
-          res.writeHead(400); res.end('Invalid JSON'); return;
+      if (!isJsonContentType(req)) {
+        res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('415 Unsupported Media Type');
+        return;
+      }
+      const body = await readBody(req, res, LIMIT_DATA);
+      if (body === null) return;
+      let updates;
+      try { updates = JSON.parse(String(body)); } catch (e) {
+        res.writeHead(400); res.end('Invalid JSON'); return;
+      }
+      if (!Array.isArray(updates) || updates.length === 0) {
+        res.writeHead(400); res.end('Empty batch'); return;
+      }
+      // 校验所有 key 合法，并预先处理 llmConfig 的「留空保留 Key」合并
+      for (const item of updates) {
+        if (!item || !item.key || !/^[a-zA-Z0-9_]+$/.test(item.key)) {
+          res.writeHead(400); res.end('Invalid key'); return;
         }
-        if (!Array.isArray(updates) || updates.length === 0) {
-          res.writeHead(400); res.end('Empty batch'); return;
+        if (item.key === 'llmConfig') {
+          item.val = JSON.parse(prepareLlmConfigWrite(JSON.stringify(item.val === undefined ? {} : item.val)));
         }
-        // 校验所有 key 合法
-        for (const { key } of updates) {
-          if (!key || !/^[a-zA-Z0-9_]+$/.test(key)) {
-            res.writeHead(400); res.end('Invalid key: ' + key); return;
-          }
-        }
-        const tmpFiles = [];   // [{ tmp, target, backup }] backup=旧文件内容（原不存在为 null）
-        let done = 0;          // 已成功 rename 的个数（回滚时据此区分"已替换/未替换"）
-        try {
-          // 第一阶段：全部写入 tmp 文件，并备份现有目标内容
-          // 注意：先 push 登记、再读备份——若读备份失败，已写 tmp 也能被下方回滚清理
+      }
+      const tmpFiles = [];   // [{ tmp, target, backup }] backup=旧文件内容（原不存在为 null）
+      let done = 0;          // 已成功 rename 的个数（回滚时据此区分"已替换/未替换"）
+      try {
+        await enqueueWrite(async () => {
+          // 第一阶段：全部写入 tmp 文件（唯一随机名），并备份现有目标内容
           for (const { key, val } of updates) {
             const target = path.join(DATA_DIR, key + '.json');
-            const tmp = target + '.tmp';
+            const tmp = uniqueTmp(target);
             fs.writeFileSync(tmp, JSON.stringify(val));
             tmpFiles.push({ tmp, target, backup: null });
             tmpFiles[tmpFiles.length - 1].backup = fs.existsSync(target) ? fs.readFileSync(target, 'utf-8') : null;
           }
-          // 第二阶段：逐个 rename 替换（Windows 上 rename 是原子的）
+          // 第二阶段：逐个 rename 替换（rename 原子；先轮转 .bak 备份）
           for (const item of tmpFiles) {
+            try { if (fs.existsSync(item.target)) fs.copyFileSync(item.target, item.target + '.bak'); } catch (e) {}
             fs.renameSync(item.tmp, item.target);
             done++;
           }
-          res.writeHead(200); res.end('OK');
-        } catch (e) {
-          // 回滚：已替换的还原旧内容（原文件不存在则删除），未替换的删 tmp
-          for (let i = 0; i < tmpFiles.length; i++) {
-            const item = tmpFiles[i];
-            try {
-              if (i < done) {
-                if (item.backup === null) {
-                  fs.unlinkSync(item.target);
-                } else {
-                  const rt = item.target + '.rollback';
-                  fs.writeFileSync(rt, item.backup);
-                  fs.renameSync(rt, item.target);
-                }
+        });
+        res.writeHead(200); res.end('OK');
+      } catch (e) {
+        // 回滚：已替换的还原旧内容（原文件不存在则删除），未替换的删 tmp
+        for (let i = 0; i < tmpFiles.length; i++) {
+          const item = tmpFiles[i];
+          try {
+            if (i < done) {
+              if (item.backup === null) {
+                fs.unlinkSync(item.target);
               } else {
-                fs.unlinkSync(item.tmp);
+                const rt = uniqueTmp(item.target);
+                fs.writeFileSync(rt, item.backup);
+                fs.renameSync(rt, item.target);
               }
-            } catch {}
-          }
-          res.writeHead(500); res.end('Batch write failed: ' + e.message);
+            } else {
+              fs.unlinkSync(item.tmp);
+            }
+          } catch {}
         }
-      });
+        console.error('批量写入失败:', e && e.message);
+        res.writeHead(500); res.end('Batch write failed');
+      }
       return;
     }
 
-    // API：POST /api/ffmpeg/compress → 调用系统已装 ffmpeg 压缩视频（前端优先本地，避免下载 30MB wasm）
-// 请求体：原始视频二进制（body 直接是文件内容）；query 可带 duration=秒 用于码率估算
-// 成功：200 + video/mp4 二进制；ffmpeg 未安装：503 {error}；压缩失败：500 {error}
-const ffmpegAvailable = (() => {
-  try {
-    const r = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    return r.error ? false : true;
-  } catch (e) { return false; }
-})();
-if (req.method === 'POST' && url === '/api/ffmpeg/compress') {
-  const query = req.url.split('?')[1] || '';
-  const duration = parseFloat((query.match(/duration=([\d.]+)/) || [])[1]) || 0;
-  const srcSize = parseInt((query.match(/size=(\d+)/) || [])[1], 10) || 0;
-  const chunks = [];
-  let size = 0;
-  req.on('data', c => { chunks.push(c); size += c.length; });
-  req.on('end', () => {
-    const responder = (code, obj) => {
-      res.writeHead(code, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(obj));
-    };
-    if (!ffmpegAvailable) return responder(503, { error: '未检测到系统 ffmpeg，请安装后重试或使用浏览器回退压缩' });
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcbff-'));
-    const inFile = path.join(tmpDir, 'in' + (duration === 0 ? '' : ''));
-    const outFile = path.join(tmpDir, 'out.mp4');
-    fs.writeFileSync(inFile, Buffer.concat(chunks));
-    // 码率预算：按时长反推（与前端口径一致：压缩目标 6MB = base64 约 8.3MB，低于接口约 9.8MB 请求体上限）
-    const audioBit = 64000;
-    const seconds = Math.max(duration, 10);
-    let videoBit = Math.max(200000, Math.min(1500000, 6 * 1024 * 1024 * 8 / seconds - audioBit));
-    // 原视频码率估算：预算码率不超过原码率，避免「越压越大」（源视频较小时直接保原码率）
-    if (srcSize > 0 && seconds > 0) {
-      const srcBit = srcSize * 8 / seconds;
-      if (srcBit < videoBit) videoBit = Math.max(200000, Math.round(srcBit));
-    }
-    const maxW = duration > 180 ? 540 : 960;
-    const vf = "scale='min(" + maxW + ",iw)':-2";
-    const child = spawn('ffmpeg', [
-      '-y', '-i', inFile, '-vf', vf, '-r', '15',
-      '-c:v', 'libx264', '-preset', 'ultrafast',
-      '-b:v', String(Math.round(videoBit)), '-maxrate', String(Math.round(videoBit * 1.45)), '-bufsize', String(Math.round(videoBit * 2.9)),
-      '-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', outFile
-    ], { windowsHide: true });
-    let errLog = '';
-    child.stderr.on('data', d => { errLog += String(d); });
-    child.on('error', e => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {} responder(503, { error: 'ffmpeg 启动失败：' + e.message }); });
-    child.on('close', code => {
-      if (code === 0 && fs.existsSync(outFile)) {
-        // 压缩后不比原文件小 → 原样返回原始数据（杜绝「越压越大」）
-        const outSize = fs.statSync(outFile).size;
-        if (srcSize > 0 && outSize >= srcSize) {
-          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {}
-          res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': chunks.reduce((s, c) => s + c.length, 0) });
-          res.end(Buffer.concat(chunks));
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': outSize });
-        fs.createReadStream(outFile).on('close', () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {} }).pipe(res);
-      } else {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {}
-        responder(500, { error: 'ffmpeg 压缩失败：' + errLog.slice(-400) });
-      }
-    });
-  });
-  return;
-}
-
-// API：GET /api/ffmpeg/check → 检测本机是否已装 ffmpeg（供前端提示用）
-if (req.method === 'GET' && url === '/api/ffmpeg/check') {
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ available: ffmpegAvailable }));
-  return;
-}
-    // 原因：千问 token-plan 等专属域名不返回 CORS 头，浏览器直连会被跨域拦截（Failed to fetch），
-    // 统一由本地服务端转发可完全绕过；仅监听 127.0.0.1（默认）时此接口仅本机可用。
+    // API：POST /api/llm/chat → OpenAI 兼容 chat/completions 代理转发。
+    // 前端直连部分大模型域名会被 CORS 拦截，统一由服务端转发；
+    // 请求缺 baseUrl/apiKey/model 时自动用服务端保存的 llmConfig 兜底
+    // → 部署场景下只有管理员存 Key，同事浏览器无需配置即可使用 AI，Key 永不下发。
     if (req.method === 'POST' && url === '/api/llm/chat') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        let cfg;
-        try { cfg = JSON.parse(body); } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: '请求体不是合法 JSON' } }));
-          return;
+      if (!isJsonContentType(req)) {
+        res.writeHead(415, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Content-Type 需为 application/json' } }));
+        return;
+      }
+      const body = await readBody(req, res, LIMIT_LLM);
+      if (body === null) return;
+      let cfg;
+      try { cfg = JSON.parse(String(body)); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: '请求体不是合法 JSON' } }));
+        return;
+      }
+      const { baseUrl, apiKey, model, messages, temperature } = cfg || {};
+      // 服务端配置兜底：请求里缺哪项就用已存 llmConfig 的对应项补上
+      let effBase = baseUrl, effKey = apiKey, effModel = model;
+      if (!effBase || !effKey || !effModel) {
+        let stored = null;
+        try { stored = JSON.parse(readDataFile('llmConfig') || 'null'); } catch (e) {}
+        if (stored && typeof stored === 'object') {
+          if (!effBase && stored.baseUrl) effBase = stored.baseUrl;
+          if (!effKey && stored.apiKey) effKey = stored.apiKey;
+          if (!effModel && stored.model) effModel = stored.model;
         }
-        const { baseUrl, apiKey, model, messages, temperature } = cfg || {};
-        if (!/^https?:\/\//i.test(String(baseUrl)) || !apiKey || !model || !Array.isArray(messages) || messages.length === 0) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: '缺少 baseUrl / apiKey / model / messages' } }));
-          return;
+      }
+      if (!/^https?:\/\//i.test(String(effBase)) || !effKey || !effModel || !Array.isArray(messages) || messages.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: '缺少 baseUrl / apiKey / model / messages，且服务端也没有可用配置' } }));
+        return;
+      }
+      const target = String(effBase).replace(/\/+$/, '') + '/chat/completions';
+      // 防 SSRF：禁止把请求转发到本机/链路本地地址（大模型服务都是公网地址，正常使用不受影响）
+      let upstreamHost = '';
+      try { upstreamHost = new URL(target).hostname; } catch (e) {}
+      if (/^(localhost|127\.|0\.0\.0\.0|::1|\[::1\]|169\.254\.)/i.test(upstreamHost)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: '不允许转发到本机/链路本地地址' } }));
+        return;
+      }
+      const mod = /^https:/i.test(target) ? https : http;
+      const upstreamBody = { model: effModel, messages };
+      if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
+        upstreamBody.temperature = Number(temperature);
+      }
+      let responded = false;
+      const upstream = mod.request(target, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + effKey
         }
-        const target = String(baseUrl).replace(/\/+$/, '') + '/chat/completions';
-        const mod = /^https:/.test(target) ? https : http;
-        const upstreamBody = { model, messages };
-        if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
-          upstreamBody.temperature = Number(temperature);
-        }
-        let responded = false;
-        const upstream = mod.request(target, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + apiKey
-          }
-        }, (up) => {
-          const chunks = [];
-          up.on('data', c => chunks.push(c));
-          up.on('end', () => {
-            if (responded) return;
-            responded = true;
-            res.writeHead(up.statusCode || 502, { 'Content-Type': up.headers['content-type'] || 'application/json' });
-            res.end(Buffer.concat(chunks));
-          });
-        });
-        upstream.setTimeout(180000, () => upstream.destroy(new Error('上游请求超时')));
-        upstream.on('error', (e) => {
+      }, (up) => {
+        const chunks = [];
+        up.on('data', c => chunks.push(c));
+        up.on('end', () => {
           if (responded) return;
           responded = true;
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: '无法连接大模型服务：' + e.message } }));
+          res.writeHead(up.statusCode || 502, { 'Content-Type': up.headers['content-type'] || 'application/json' });
+          res.end(Buffer.concat(chunks));
         });
-        upstream.write(JSON.stringify(upstreamBody));
-        upstream.end();
       });
+      upstream.setTimeout(180000, () => upstream.destroy(new Error('上游请求超时')));
+      upstream.on('error', (e) => {
+        if (responded) return;
+        responded = true;
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: '无法连接大模型服务：' + e.message } }));
+      });
+      upstream.write(JSON.stringify(upstreamBody));
+      upstream.end();
       return;
     }
 
     // 静态文件白名单：仅允许页面入口、资源目录（css/js/icons）与固定文件，
     // 防止通过 URL 直接下载项目源码（如 /server.js、/tests/、/package.json 等）
-    // 先拒绝含路径穿越片段（..）的 URL，避免 /js/../server.js 之类绕过下方前缀白名单
-    if (url.split('/').includes('..')) {
-      res.writeHead(403); res.end('Forbidden'); return;
+    // 拒绝反斜杠（Windows 上 path.join 会把它当分隔符，可构造 /js/..\server.js 绕过前缀白名单）
+    // 原始 URL 与解码后 URL 都查：双保险覆盖 %2e%2e、%5C 等编码变体
+    const urlCandidates = [url];
+    try { urlCandidates.push(decodeURIComponent(url)); } catch (e) {
+      res.writeHead(403); res.end('Forbidden'); return;  // 畸形编码直接拒绝
+    }
+    for (const u of urlCandidates) {
+      if (u.includes('\\') || u.split('/').includes('..')) {
+        res.writeHead(403); res.end('Forbidden'); return;
+      }
     }
     const allowed =
       url === '/' || url === '/index.html' ||
@@ -315,17 +479,17 @@ if (req.method === 'GET' && url === '/api/ffmpeg/check') {
       res.writeHead(403); res.end('Forbidden'); return;
     }
 
-    // 静态文件服务
-    let filePath = path.join(__dirname, url === '/' ? 'index.html' : url);
+    // 静态文件服务（resolve 归一化后断言仍在项目内，作为最后防线）
+    let filePath = path.resolve(__dirname, url === '/' ? 'index.html' : '.' + url);
     const ext = path.extname(filePath);
 
     // 安全：禁止通过网址直接访问数据目录（data/ 只允许走 /api/data 接口）
-    if (filePath.startsWith(DATA_DIR)) {
+    if (filePath === DATA_DIR || filePath.startsWith(DATA_DIR + path.sep)) {
       res.writeHead(403); res.end('Forbidden'); return;
     }
 
     // 安全：禁止路径穿越（防止访问项目外的文件）
-    if (!filePath.startsWith(__dirname)) {
+    if (filePath !== __dirname && !filePath.startsWith(__dirname + path.sep)) {
       res.writeHead(403); res.end('Forbidden'); return;
     }
 
@@ -353,7 +517,11 @@ if (req.method === 'GET' && url === '/api/ffmpeg/check') {
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
     res.end(fs.readFileSync(filePath));
   } catch (err) {
-    res.writeHead(500); res.end('Server Error: ' + err.message);
+    console.error('服务器错误:', err && err.stack || err);
+    try {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Server Error');
+    } catch (e) { /* 响应头已发出则忽略 */ }
   }
 });
 
@@ -371,11 +539,12 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  const addr = HOST ? `http://localhost:${PORT}` : `http://<电脑IP>:${PORT}（局域网模式 MCB_LAN=1）`;
+  const addr = HOST ? `http://localhost:${PORT}` : `http://<电脑IP>:${PORT}（MCB_LAN=1 模式）`;
   console.log('==============================================');
   console.log(`✓ 新媒体数据工作台服务已启动`);
   console.log(`✓ 访问地址: ${addr}`);
   console.log(`✓ 数据存储: ${DATA_DIR}`);
+  console.log(`✓ 访问令牌: ${ACCESS_TOKEN ? '已启用（服务器部署模式）' : '未启用（仅本机默认模式）'}`);
   console.log(`✓ 关闭服务: Ctrl+C`);
   console.log('==============================================');
 });

@@ -4,7 +4,7 @@
   "private": true,
   "description": "新媒体数据工作台 —— 纯前端零依赖 + Node 文件存储后端",
   "scripts": {
-    "test": "node tests/run.js",
+    "test": "node tests/run.js && node tests/smoke-charts.js && node tests/server-security.js",
     "start": "node start-ui.js"
   }
 }
