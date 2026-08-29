@@ -40,6 +40,14 @@ function countCorruptRecords(list, fields) {
   return n;
 }
 
+// ===== 唯一 ID 生成 =====
+// 字符串拼接而非数值加法：Date.now() 量级下浮点小数仅约 4096 个离散值，
+// 同一毫秒批量生成（如表格批量导入）会碰撞，导致编辑/删除命中错误记录
+let __idSeq = 0;
+function genId() {
+  return Date.now().toString(36) + '-' + (++__idSeq).toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
 // ===== CONFIG =====
 const VIDEO_PLATFORMS = ['抖音', '快手', '小红书', '视频号'];
 const ALL_PLATFORMS = [...VIDEO_PLATFORMS];
@@ -47,16 +55,38 @@ const PLATFORM_SHORT = { '抖音':'抖','快手':'快','小红书':'红','视频
 
 // ===== 数据读写（异步 fetch） =====
 // API：GET/POST /api/data/{key}  →  server.js 服务
-// 失败时返回空数组（与原 localStorage 行为一致）
+// 失败时返回空数组（与原 localStorage 行为一致），同时记录失败 key：
+// 核心数据加载失败时后续保存会被禁止——否则「服务重启间隙打开页面 → 内存空数组 →
+// 一次保存」会把真实数据整体覆盖丢失。
+const __failedLoadKeys = new Set();
 async function loadData(key) {
   try {
     const res = await fetch('/api/data/' + key);
-    if (!res.ok) return [];
+    if (!res.ok) { __failedLoadKeys.add(key); return []; }
     return await res.json();
   } catch (e) {
     console.warn('[loadData] ' + key + ' 失败:', e);
+    __failedLoadKeys.add(key);
     return [];
   }
+}
+
+// 核心数据键：这些键加载失败时禁止再写入（防止空/残缺数据覆盖磁盘真实数据）
+const CORE_DATA_KEYS = ['contents', 'stats', 'reviews', 'accountStats', 'accountIds'];
+function coreDataLoadFailed() {
+  return CORE_DATA_KEYS.some(k => __failedLoadKeys.has(k));
+}
+
+// 数据未加载横幅（区别于保存失败横幅）：点击可刷新重试
+function showDataNotLoadedBanner() {
+  if (typeof document === 'undefined' || !document.getElementById || !document.body) return;
+  if (document.getElementById('data-not-loaded-banner')) return;
+  const div = document.createElement('div');
+  div.id = 'data-not-loaded-banner';
+  div.innerHTML = '⛔ 后台数据未能加载，已禁止写入以防止覆盖真实数据 —— 请检查服务后点击此横幅刷新页面';
+  div.style.cssText = 'position:fixed;top:38px;left:0;right:0;background:#b84c2b;color:#fff;text-align:center;padding:8px;z-index:99999;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer';
+  div.onclick = () => location.reload();
+  document.body.appendChild(div);
 }
 
 // 保存失败提示：写入被后端拒绝（非 2xx / 网络错误）时显示持久横幅，直到后续保存成功才消失。
@@ -83,6 +113,12 @@ function clearSaveFailedBanner() {
 // 串行化同 key 的保存请求（防竞态：先发的请求先到后到达会被覆盖）
 const _inflightSaves = {};
 async function saveData(key, val) {
+  // 核心数据加载失败时禁止写入（防止空数据整体覆盖磁盘真实数据）
+  if (CORE_DATA_KEYS.includes(key) && coreDataLoadFailed()) {
+    console.warn('[saveData] ' + key + ' 被拒绝：数据未成功加载，禁止写入');
+    showDataNotLoadedBanner();
+    return;
+  }
   // 等待同一 key 的上一次保存完成
   if (_inflightSaves[key]) {
     try { await _inflightSaves[key]; } catch (e) {}
@@ -107,6 +143,12 @@ async function saveData(key, val) {
 // 批量保存（跨文件原子：后端先写全部 tmp，再全部 rename，失败自动回滚）
 // updates: [{ key, val }, ...]
 async function saveDataBatch(updates) {
+  // 核心数据加载失败时禁止写入（防止空数据整体覆盖磁盘真实数据）
+  if (updates.some(u => CORE_DATA_KEYS.includes(u.key)) && coreDataLoadFailed()) {
+    console.warn('[saveDataBatch] 被拒绝：数据未成功加载，禁止写入');
+    showDataNotLoadedBanner();
+    return;
+  }
   // 等待所有 key 的未完成保存
   for (const { key } of updates) {
     if (_inflightSaves[key]) {

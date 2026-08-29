@@ -110,8 +110,8 @@ function renderVideoDataModal(c) {
     : `<div class="form-row">
         <div class="form-group"><label>涨粉</label><input type="number" id="statFollowers" value="${s ? s.followers : ''}" min="0"></div>
       </div>`;
-  return `<h3>${pf}数据录入</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;"><span class="platform-tag video">${pf}</span> ${escapeHtml(c.title)}<br><span style="font-size:12px;color:var(--text3);">日期：${c.createdAt}</span></p>
+  return `<h3>${escapeHtml(pf)}数据录入</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;"><span class="platform-tag video">${escapeHtml(pf)}</span> ${escapeHtml(c.title)}<br><span style="font-size:12px;color:var(--text3);">日期：${escapeHtml(c.createdAt)}</span></p>
     <div class="form-group"><label>作品标题/描述（可选）</label><input type="text" id="statTitle" value="${escapeHtml(s && s.title ? s.title : '')}" placeholder="与登记内容一致时留空即可"></div>
     <div class="form-row">
       <div class="form-group"><label>播放量</label><input type="number" id="statViews" value="${s ? s.views : ''}" min="0"></div>
@@ -166,10 +166,17 @@ async function saveContentData() {
   const favorites = numOrNull(gv('statFavorites'));
   const shares = numOrNull(gv('statShares'));
   const followers = numOrNull(gv('statFollowers'));
-  const existing = stats.find(x => x.contentId == c.id || x.contentId == Number(c.id) || (x.platform === c.platform && x.date === c.createdAt));
+  // 已有数据优先按 contentId 精确匹配；无 contentId 的旧数据才用「平台+日期」兜底，
+  // 且该键必须能唯一归属到当前内容（同平台同日还有其他内容时不可归属，防止改写别人的记录）
+  const existing = stats.find(x => {
+    if (x.contentId == c.id || x.contentId == Number(c.id)) return true;
+    if (x.contentId) return false;
+    if (x.platform !== c.platform || x.date !== c.createdAt) return false;
+    return !contents.some(o => o.platform === c.platform && o.createdAt === c.createdAt && o.id != c.id && o.id != Number(c.id));
+  });
   const statData = { platform: c.platform, date: c.createdAt, title, views, completionRate, avgWatch, recommend, likes, comments, favorites, shares, followers, contentId: c.id };
   if (existing) Object.assign(existing, statData);
-  else stats.push({ id: Date.now() + Math.random(), ...statData });
+  else stats.push({ id: genId(), ...statData });
   await saveData('stats', stats);
   pendingDataContentId = null;
   closeModal(); render();
@@ -214,13 +221,20 @@ function clearFilteredContents() {
     danger: true,
     okText: '确认清空',
     onOk: async () => {
-      // 与单条删除同口径的关联匹配：contentId 精确匹配 + platform+date 兜底（老数据未绑定 contentId）
+      // 与单条删除同口径的关联匹配：contentId 精确匹配；无 contentId 的旧数据才用「平台+日期」兜底，
+      // 且该键必须唯一归属到被删内容（同键还有其他未删内容时不可归属，防止连带误删别人的数据）
       const idSet = new Set();
       filtered.forEach(c => { idSet.add(String(c.id)); idSet.add(String(Number(c.id))); });
-      const pfDateSet = new Set(filtered.map(c => c.platform + '|' + c.createdAt));
       contents = contents.filter(c => !idSet.has(String(c.id)));
+      const keyCount = {};
+      filtered.forEach(c => {
+        const k = c.platform + '|' + c.createdAt;
+        keyCount[k] = (keyCount[k] || 0) + 1;
+      });
+      const keyStillTaken = new Set(contents.map(c => c.platform + '|' + c.createdAt));
+      const orphanKeySet = new Set(Object.keys(keyCount).filter(k => keyCount[k] === 1 && !keyStillTaken.has(k)));
       stats = stats.filter(s =>
-        !(idSet.has(String(s.contentId)) || pfDateSet.has(s.platform + '|' + s.date))
+        !(idSet.has(String(s.contentId)) || (!s.contentId && orphanKeySet.has(s.platform + '|' + s.date)))
       );
       await saveDataBatch([
         { key: 'contents', val: contents },
@@ -242,11 +256,15 @@ function deleteContent(id) {
       const numId = Number(id);
       const c = contents.find(x => x.id == id || x.id == numId);
       contents = contents.filter(x => x.id != id && x.id != numId);
-      // 同步清理关联的视频数据（与 findLinkedTitle 关联逻辑对称）：
-      // 1) contentId 精确匹配；2) 兜底 platform + date 匹配（老数据/未绑定 contentId 的记录）
-      const isLinked = s =>
-        s.contentId == id || s.contentId == numId ||
-        (c && s.platform === c.platform && s.date === c.createdAt);
+      // 同步清理关联的视频数据：
+      // 1) contentId 精确匹配；2) 兜底仅限「未绑 contentId 的旧数据 + 平台+日期键唯一归属到被删内容」，
+      //    同键还有其他内容时不可归属（与编辑侧 oldKeyOnly 防护对称），防止误删同键其他内容的统计
+      const keyStillTaken = c ? contents.some(x => x.platform === c.platform && x.createdAt === c.createdAt) : true;
+      const isLinked = s => {
+        if (s.contentId == id || s.contentId == numId) return true;
+        if (s.contentId || !c || keyStillTaken) return false;
+        return s.platform === c.platform && s.date === c.createdAt;
+      };
       stats = stats.filter(s => !isLinked(s));
       await saveDataBatch([
         { key: 'contents', val: contents },

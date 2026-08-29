@@ -600,7 +600,7 @@ async function parseTableRows(rows, type, platform) {
     }
     if (!content) {
       content = {
-        id: Date.now() + Math.random(),
+        id: genId(),
         title: normTitle || (platform + ' ' + normDate + ' 作品'),
         platform,
         topic: '',
@@ -625,7 +625,7 @@ async function parseTableRows(rows, type, platform) {
       if (differs) overwriteWarnings.push(normDate + ' · ' + platform + '「' + content.title + '」');
       Object.assign(existing, newStat);
     }
-    else stats.push({ id: Date.now() + Math.random(), ...newStat });
+    else stats.push({ id: genId(), ...newStat });
     parsedCount++;
     if (autoCreated) contentCreatedCount++;
     // 任务联动：该平台当日任务自动完成 + 标记已登记链接
@@ -654,8 +654,8 @@ function showParserResult(result, type) {
     resultDiv.innerHTML = `<div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:6px;">✅ 成功处理 ${result.parsedCount} 条数据${createdInfo}</div>${result.results.join('')}`;
     const warns = result.overwriteWarnings || [];
     if (warns.length > 0) {
-      // 同日期同标题但数据不同：已用后一条覆盖，明确提醒用户知情
-      const list = warns.slice(0, 5).join('、');
+      // 同日期同标题但数据不同：已用后一条覆盖，明确提醒用户知情（内容来自导入文件，必须转义）
+      const list = warns.slice(0, 5).map(escapeHtml).join('、');
       const more = warns.length > 5 ? ` 等共 ${warns.length} 条` : '';
       resultDiv.innerHTML += `<div style="font-size:12px;color:var(--red);font-weight:600;margin-top:10px;">⚠️ ${warns.length} 条「同日期同标题但数据不同」已用后一条覆盖：${list}${more}<br><span style="font-weight:400;color:var(--text3);">若这些是互不相同的作品，请先在内容登记里改标题区分后再导入。</span></div>`;
       showToast(`⚠️ 有 ${warns.length} 条同标题不同数据被覆盖`);

@@ -91,7 +91,7 @@ function formatLocalTime(iso) {
 // 各 AI 功能标题后面的「已配置/未配置」小胶囊（样式同 API Key 栏旁的 .llm-badge）
 function renderLlmStatusBadge() {
   const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
+  const configured = cfg.baseUrl && (cfg.apiKey || cfg.hasKey) && cfg.model;
   return configured
     ? '<span class="llm-badge">已配置</span>'
     : '<span class="llm-badge nok">未配置</span>';
@@ -99,7 +99,7 @@ function renderLlmStatusBadge() {
 
 function renderLLMConfig() {
   const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
+  const configured = cfg.baseUrl && (cfg.apiKey || cfg.hasKey) && cfg.model;
   const locked = configured && !__llmEditing;   // 已保存且未在编辑 → 锁定
   const dis = locked ? ' disabled' : '';
   const tempVal = (cfg.temperature === undefined || cfg.temperature === null || cfg.temperature === '') ? '' : cfg.temperature;
@@ -159,21 +159,22 @@ function saveLLMConfig() {
   const model = document.getElementById('llmModel').value.trim();
   const tRaw = document.getElementById('llmTemperature').value.trim();
   if (!/^https?:\/\//i.test(baseUrl)) { showToast('Base URL 需以 http:// 或 https:// 开头'); return; }
-  if (!apiKey && !(llmConfig && llmConfig.apiKey)) { showToast('请输入 API Key'); return; }
+  if (!apiKey && !(llmConfig && (llmConfig.apiKey || llmConfig.hasKey))) { showToast('请输入 API Key'); return; }
   if (!model) { showToast('请输入模型名称'); return; }
   let temperature;
   if (tRaw !== '') {
     temperature = Number(tRaw);
     if (isNaN(temperature) || temperature < 0 || temperature > 2) { showToast('Temperature 需为 0~2 的数字，留空则不传'); return; }
   }
-  // API Key 留空 = 保持已保存的 Key（页面从不渲染真实 Key，编辑时重新输入才更换）
+  // API Key 留空 = 保持已保存的 Key（服务端合并，页面从不渲染真实 Key，编辑时重新输入才更换）
   const cfg = {
     baseUrl,
-    apiKey: apiKey || (llmConfig && llmConfig.apiKey) || '',
+    apiKey: apiKey,   // 留空发空串，服务端保留已存 Key
     model,
     savedAt: new Date().toISOString()
   };
   if (temperature !== undefined) cfg.temperature = temperature;
+  cfg.hasKey = !!(apiKey || (llmConfig && llmConfig.hasKey));
   llmConfig = cfg;
   __llmEditing = false;
   saveData('llmConfig', llmConfig).then(() => showToast('大模型配置已保存'));
@@ -200,7 +201,7 @@ function clearLLMConfig() {
 // 前端直连会被浏览器跨域（CORS）拦截：千问 token-plan 专属域名（token-plan.*.maas.aliyuncs.com）
 // 等不返回 CORS 响应头，浏览器直接 fetch 会报 Failed to fetch；改由本地 Node 服务端转发即可绕过。
 async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
-  const body = { baseUrl: String(baseUrl).replace(/\/+$/, ''), apiKey: apiKey, model: model, messages: messages };
+  const body = { baseUrl: String(baseUrl).replace(/\/+$/, ''), apiKey: apiKey || '', model: model, messages: messages };
   // temperature 仅在校验通过（0~2 数字）时透传；未填/无效则不传，避免部分服务端报错
   if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
     body.temperature = Number(temperature);
@@ -228,22 +229,25 @@ async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
 // 供后续 AI 功能复用的通用调用（使用已保存配置）
 async function chatLLM(messages, signal) {
   const cfg = llmConfig || {};
-  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+  if (!cfg.baseUrl || !(cfg.apiKey || cfg.hasKey) || !cfg.model) {
     throw new Error('尚未配置大模型，请先在上方填写并保存配置');
   }
-  return chatRaw(cfg.baseUrl, cfg.apiKey, cfg.model, messages, cfg.temperature, signal);
+  // apiKey 可为空（脱敏下发），服务端代理会用已存 Key 兜底
+  return chatRaw(cfg.baseUrl, cfg.apiKey || '', cfg.model, messages, cfg.temperature, signal);
 }
 
 // ===== 测试连接：用表单当前值直连（不要求先保存）=====
 async function testLLMConnection() {
   const baseUrl = document.getElementById('llmBaseUrl').value.trim();
-  const apiKey = document.getElementById('llmApiKey').value.trim() || (llmConfig && llmConfig.apiKey) || '';
+  const hasSavedKey = !!(llmConfig && (llmConfig.apiKey || llmConfig.hasKey));
+  const apiKey = document.getElementById('llmApiKey').value.trim();
   const model = document.getElementById('llmModel').value.trim();
   const tRaw = document.getElementById('llmTemperature') ? document.getElementById('llmTemperature').value.trim() : '';
   if (!/^https?:\/\//i.test(baseUrl)) { showToast('Base URL 需以 http:// 或 https:// 开头'); return; }
-  if (!apiKey || !model) { showToast('请填写 API Key 与模型名称'); return; }
+  if ((!apiKey && !hasSavedKey) || !model) { showToast('请填写 API Key 与模型名称'); return; }
   showToast('正在测试连接...');
   try {
+    // Key 留空时服务端会用已保存配置兜底（测试的 Base URL/模型以表单为准）
     await chatRaw(baseUrl, apiKey, model, [{ role: 'user', content: 'ping' }], tRaw === '' ? undefined : Number(tRaw));
     showToast('连接成功 Let us begin 🎉');
   } catch (e) {
@@ -335,7 +339,7 @@ function setAiReviewTarget(v) {
 // AI 配置与功能页的 AI 数据分析专家卡片（分析对象 + 周期下拉 + 运营时长输入）
 function renderAiReviewCard() {
   const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
+  const configured = cfg.baseUrl && (cfg.apiKey || cfg.hasKey) && cfg.model;
   const months = getOverviewAiMonths();
   const isRunning = __overviewAiBusy && __aiReviewController;
   return `<div class="ai-split">
@@ -586,7 +590,7 @@ function aiCopyHeadButtons() {
 
 function renderAiVideoCopyCard() {
   const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
+  const configured = cfg.baseUrl && (cfg.apiKey || cfg.hasKey) && cfg.model;
   // 如果 AI 正在后台运行，显示 loading 状态
   const isRunning = __aiCopyLoading && __aiCopyController;
   return `<div class="ai-split">
@@ -735,33 +739,48 @@ function buildAiCopyResultsHtml() {
   if (!__aiCopyResult || (!__aiCopyResult.titles.length && !__aiCopyResult.description)) {
     return '';
   }
-  
+
   const r = __aiCopyResult;
   let html = '';
-  
+
+  // 安全：AI 返回文本绝不拼进内联 onclick 的 JS 字符串上下文（escapeHtml 的 &#39;
+  // 会被属性解析还原成 ' 造成逃逸）；改用 data-* 标记 + 统一事件委托取 __aiCopyResult 原文
+
   // 标题
   if (r.titles.length) {
     html += '<div style="font-size:12px;color:var(--text3);margin-bottom:6px;font-weight:600;">标题（点击复制）</div>';
-    r.titles.forEach(t => {
-      html += `<div class="ai-copy-item" onclick="copyAiCopyText('${escapeHtml(t).replace(/'/g, "\\'")}')">${escapeHtml(t)}
+    r.titles.forEach((t, i) => {
+      html += `<div class="ai-copy-item" data-copy-type="title" data-copy-idx="${i}">${escapeHtml(t)}
       </div>`;
     });
   }
-  
+
   // 描述
   if (r.description) {
     html += '<div style="font-size:12px;color:var(--text3);margin:10px 0 6px;font-weight:600;">视频描述（点击复制）</div>';
-    html += `<div class="ai-copy-item" onclick="copyAiCopyText('${escapeHtml(r.description).replace(/'/g, "\\'")}')">${escapeHtml(r.description)}</div>`;
+    html += `<div class="ai-copy-item" data-copy-type="desc">${escapeHtml(r.description)}</div>`;
   }
-  
+
   // 标签
   if (r.tags) {
     html += '<div style="font-size:12px;color:var(--text3);margin:10px 0 6px;font-weight:600;">推荐标签（点击复制）</div>';
-    html += `<div class="ai-copy-item" onclick="copyAiCopyText('${escapeHtml(r.tags).replace(/'/g, "\\'")}')">${escapeHtml(r.tags)}</div>`;
+    html += `<div class="ai-copy-item" data-copy-type="tags">${escapeHtml(r.tags)}</div>`;
   }
 
   return html;
 }
+
+// 复制点击的统一事件委托：从 __aiCopyResult 按 data-* 取原文，不经过 HTML/JS 字符串拼接
+document.addEventListener('click', function(e) {
+  const item = e.target && e.target.closest ? e.target.closest('.ai-copy-item') : null;
+  if (!item || !__aiCopyResult) return;
+  const type = item.getAttribute('data-copy-type');
+  let text = '';
+  if (type === 'title') text = (__aiCopyResult.titles || [])[Number(item.getAttribute('data-copy-idx'))] || '';
+  else if (type === 'desc') text = __aiCopyResult.description || '';
+  else if (type === 'tags') text = __aiCopyResult.tags || '';
+  if (text) copyAiCopyText(text);
+});
 
 function renderAiCopyResults() {
   const el = document.getElementById('aiCopyResults');

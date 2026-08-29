@@ -148,7 +148,7 @@ function renderReviewPanel(period) {
           <span class="platform-tag video">短视频·${formatReviewRange(r.period, r.date)}</span>
           <button class="btn-delete-mini" onclick="deleteReview('${r.id}')" title="删除复盘">删除</button>
         </div>
-        <div class="review-item-date">${r.date}</div>
+        <div class="review-item-date">${escapeHtml(r.date)}</div>
         ${r.highlights ? `<div class="review-item-line"><span style="color:var(--green);">小结与亮点：</span>${escapeHtml(r.highlights)}</div>` : ''}
         ${r.problems ? `<div class="review-item-line"><span style="color:var(--red);">问题：</span>${escapeHtml(r.problems)}</div>` : ''}
         ${r.plans ? `<div class="review-item-line"><span style="color:var(--purple);">计划：</span>${escapeHtml(r.plans)}</div>` : ''}
@@ -442,7 +442,7 @@ function renderVideoData(period) {
     html += '<p style="font-size:12px;color:var(--orange);margin-bottom:8px;">以下数据未找到对应登记内容（已失效或被删除），可删除或补录内容</p>';
     html += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>日期</th><th>平台</th><th>播放</th><th>点赞</th><th>操作</th></tr></thead><tbody>';
     orphanStats.forEach(s => {
-      html += `<tr><td>${s.date}</td><td><span class="platform-tag video">${s.platform}</span></td><td>${formatNum(s.views)}</td><td>${formatNum(s.likes)}</td><td><button style="background:none;border:none;color:var(--red);cursor:pointer;font-size:12px;" onclick="deleteStat('${s.id}')">删除</button></td></tr>`;
+      html += `<tr><td>${escapeHtml(s.date)}</td><td><span class="platform-tag video">${escapeHtml(s.platform)}</span></td><td>${formatNum(s.views)}</td><td>${formatNum(s.likes)}</td><td><button style="background:none;border:none;color:var(--red);cursor:pointer;font-size:12px;" onclick="deleteStat('${String(s.id).replace(/[^a-zA-Z0-9_-]/g, '')}')">删除</button></td></tr>`;
     });
     html += '</tbody></table></div>';
   }
@@ -695,7 +695,7 @@ async function saveAccountIdOnly() {
   var realName = (document.getElementById('accAccountRealName').value || '').trim();
   var operator = (document.getElementById('accAccountOperator').value || '').trim();
   if (!accountId && !note && !phone && !realName && !operator) { showToast('请至少填写一项信息'); return; }
-  accountIds.push({ id: Date.now() + Math.random(), platform: platform, accountId: accountId, note: note, phone: phone, realName: realName, operator: operator });
+  accountIds.push({ id: genId(), platform: platform, accountId: accountId, note: note, phone: phone, realName: realName, operator: operator });
   await saveData('accountIds', accountIds); render(); showToast(platform + '账号ID已保存');
 }
 

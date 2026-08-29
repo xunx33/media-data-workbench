@@ -69,7 +69,7 @@ function renderContentDetail(content) {
     <div class="task-detail-info">
     <div class="task-detail-row"><span class="detail-label">标题</span><span>${escapeHtml(content.title)}</span></div>
     ${safeLink ? `<div class="task-detail-row"><span class="detail-label">链接</span><a href="${escapeHtml(safeLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--link-blue);word-break:break-all;">${escapeHtml(content.url)}</a></div>` : ''}
-    <div class="task-detail-row"><span class="detail-label">日期</span><span>${content.createdAt || ''}${content.topic ? ' · 选题：' + escapeHtml(content.topic) : ''}</span></div>`;
+    <div class="task-detail-row"><span class="detail-label">日期</span><span>${escapeHtml(content.createdAt || '')}${content.topic ? ' · 选题：' + escapeHtml(content.topic) : ''}</span></div>`;
 
   // 数据摘要（视频，按平台动态显示）
   const s = stats.find(x => x.contentId == content.id || x.contentId == Number(content.id));

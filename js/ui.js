@@ -98,7 +98,7 @@ async function saveContent() {
       if (statChanged) { await saveData('stats', stats); }
     }
   } else {
-    savedId = Date.now() + Math.random();
+    savedId = genId();
     contents.push({ id: savedId, title, platform, topic, url, createdAt: date });
   }
   await saveData('contents', contents); closeModal();

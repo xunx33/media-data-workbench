@@ -376,6 +376,24 @@ function importData(event) {
       reviews = asArr(data.reviews);            if (data.reviews)  picked.push('复盘' + reviews.length);
       accountStats = asArr(data.accountStats);  if (data.accountStats) picked.push('账号数据' + accountStats.length);
       accountIds = asArr(data.accountIds);      if (data.accountIds)   picked.push('账号ID' + accountIds.length);
+      // 安全清洗：id/contentId 会拼进 onclick 的 JS 字符串上下文，统一收紧到安全字符集，
+      // 防止恶意备份文件借 id 注入脚本
+      const cleanId = v => String(v == null ? '' : v).replace(/[^a-zA-Z0-9_-]/g, '');
+      [contents, stats, reviews, accountStats, accountIds].forEach(arr => arr.forEach(rec => {
+        if (rec && typeof rec === 'object') {
+          if ('id' in rec) rec.id = cleanId(rec.id);
+          if ('contentId' in rec) rec.contentId = cleanId(rec.contentId);
+        }
+      }));
+      // 导入前自动快照：把当前 5 类数据整体存为 data/ 内一个快照文件，选错备份可人工回退
+      try {
+        const snapKey = 'import_snapshot_' + new Date().toISOString().replace(/[:.]/g, '-');
+        await saveData(snapKey, {
+          contents, stats: stats, reviews, accountStats, accountIds,
+          savedAt: new Date().toISOString(), note: '导入前自动快照'
+        });
+        picked.push('（已存导入前快照 ' + snapKey + '）');
+      } catch (e) { /* 快照失败不阻断导入 */ }
       // 一次性原子写入全部 5 类数据（写完成后才继续，避免"已导入"提示时数据还没落盘）
       await saveDataBatch([
         { key: 'contents', val: contents },
