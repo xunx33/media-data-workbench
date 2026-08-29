@@ -21,12 +21,20 @@ const path = require('path');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-// 安全：默认仅本机可访问（绑定 127.0.0.1）；MCB_LAN=1 时监听所有网卡（部署时建议配合 ACCESS_TOKEN）
+// 安全：默认仅本机可访问（绑定 127.0.0.1）。部署给多人使用时的推荐架构：
+//   nginx（auth_basic 每人一个账号，注入 X-Remote-User 头）→ 反代到本机 127.0.0.1:3000
+//   服务端保持 127.0.0.1 绑定，外部无法绕过 nginx 直连（身份头不可伪造）
 const HOST = process.env.MCB_LAN === '1' ? undefined : '127.0.0.1';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
 const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-const DATA_DIR = path.join(__dirname, 'data');
+// 多用户模式：MCB_MULTIUSER=1 时按 nginx 注入的 X-Remote-User 头识别登录者，
+// 数据存 data/users/<用户名>/*.json 相互隔离；llmConfig（共享 AI Key）与审计日志为全局。
+// MCB_DEFAULT_USER：首次启用时，data/ 根下已有的旧数据自动迁移到该用户名下（默认 admin）。
+const MULTIUSER = process.env.MCB_MULTIUSER === '1';
+const DEFAULT_USER = (process.env.MCB_DEFAULT_USER || 'admin').replace(/[^a-zA-Z0-9_-]/g, '') || 'admin';
+const DATA_DIR = path.resolve(process.env.MCB_DATA_DIR || path.join(__dirname, 'data'));
+const USERS_DIR = path.join(DATA_DIR, 'users');
 // 各写接口请求体上限
 const LIMIT_DATA = 10 * 1024 * 1024;   // 单 key / batch 写入
 const LIMIT_LLM = 2 * 1024 * 1024;     // LLM 消息体
@@ -149,9 +157,48 @@ function atomicWrite(target, content) {
   try { if (fs.existsSync(target)) fs.copyFileSync(target, target + '.bak'); } catch (e) { /* 备份失败不阻塞写入 */ }
   fs.renameSync(tmp, target);
 }
-function readDataFile(key) {
-  const p = path.join(DATA_DIR, key + '.json');
+function readDataFile(key, baseDir) {
+  const p = path.join(baseDir || DATA_DIR, key + '.json');
   try { return fs.readFileSync(p, 'utf-8'); } catch (e) { return null; }
+}
+
+// ===== 多用户模式 =====
+// key 的归属目录：llmConfig（共享 AI Key）固定全局；多用户模式其余（含 llmQuota 额度、
+// 导入快照）按用户隔离；单用户模式一律用根目录
+function userDir(user) { return path.join(USERS_DIR, user); }
+function keyBaseDir(key, user) {
+  if (key === 'llmConfig') return DATA_DIR;
+  return (MULTIUSER && user) ? userDir(user) : DATA_DIR;
+}
+function ensureUserDir(user) {
+  const dir = userDir(user);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+// 审计日志：记录谁在什么时候写了什么（登录记录由 nginx access.log 提供）
+function auditLog(user, action, detail) {
+  try {
+    fs.appendFileSync(path.join(DATA_DIR, 'activity.log'),
+      '[' + new Date().toISOString() + '] user=' + (user || '-') + ' action=' + action + ' ' + (detail || '') + '\n');
+  } catch (e) { /* 日志失败不影响主流程 */ }
+}
+// 首次启用多用户模式时，把 data/ 根下已有的旧数据（llmConfig 除外）迁移到默认用户名下
+function migrateRootDataToDefaultUser() {
+  if (!MULTIUSER) return;
+  ensureUserDir(DEFAULT_USER);
+  const defDir = userDir(DEFAULT_USER);
+  let moved = 0;
+  for (const name of fs.readdirSync(DATA_DIR)) {
+    if (!name.endsWith('.json') || name === 'llmConfig.json') continue;
+    const src = path.join(DATA_DIR, name);
+    const dst = path.join(defDir, name);
+    try {
+      if (fs.statSync(src).isFile() && !fs.existsSync(dst)) {
+        fs.renameSync(src, dst);
+        moved++;
+      }
+    } catch (e) { console.warn('迁移失败:', name, e.message); }
+  }
+  if (moved > 0) console.log(`✓ 已将 ${moved} 个旧数据文件迁移到默认用户「${DEFAULT_USER}」名下`);
 }
 
 // llmConfig 写入预处理：apiKey 为空字符串 = 保留已存 Key（页面从不回显真实 Key）；
@@ -269,11 +316,32 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // API：GET /api/data/{key} → 读取（llmConfig 脱敏，不返回 apiKey）
+    // ===== 多用户模式：从反代注入的 X-Remote-User 识别登录者 =====
+    // 该头只能来自本机反代（服务绑定 127.0.0.1，外部无法直连伪造），缺头一律拒绝
+    let currentUser = '';
+    if (MULTIUSER) {
+      const user = String(req.headers['x-remote-user'] || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!user) {
+        res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('401 需经 nginx 认证访问（未收到 X-Remote-User 头）');
+        return;
+      }
+      currentUser = user;
+      ensureUserDir(user);
+    }
+
+    // API：GET /api/me → 当前登录用户（前端顶栏展示）
+    if (req.method === 'GET' && url === '/api/me') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ user: currentUser }));
+      return;
+    }
+
+    // API：GET /api/data/{key} → 读取（llmConfig 脱敏且全局共享；其余按用户隔离）
     if (req.method === 'GET' && url.startsWith('/api/data/')) {
       const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
       if (!key) { res.writeHead(400); res.end('Invalid key'); return; }
-      const raw = readDataFile(key);
+      const raw = readDataFile(key, keyBaseDir(key, currentUser));
       const text = key === 'llmConfig'
         ? JSON.stringify(maskLlmConfig(raw))
         : (raw !== null ? raw : '[]');
@@ -297,9 +365,10 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400); res.end('Invalid JSON'); return;
       }
       const content = key === 'llmConfig' ? prepareLlmConfigWrite(String(body)) : String(body);
-      const target = path.join(DATA_DIR, key + '.json');
+      const target = path.join(keyBaseDir(key, currentUser), key + '.json');
       try {
         await enqueueWrite(() => atomicWrite(target, content));
+        auditLog(currentUser, 'write', 'key=' + key + ' bytes=' + Buffer.byteLength(content));
         res.writeHead(200); res.end('OK');
       } catch (e) {
         console.error('写入失败:', key, e && e.message);
@@ -342,7 +411,7 @@ const server = http.createServer(async (req, res) => {
         await enqueueWrite(async () => {
           // 第一阶段：全部写入 tmp 文件（唯一随机名），并备份现有目标内容
           for (const { key, val } of updates) {
-            const target = path.join(DATA_DIR, key + '.json');
+            const target = path.join(keyBaseDir(key, currentUser), key + '.json');
             const tmp = uniqueTmp(target);
             fs.writeFileSync(tmp, JSON.stringify(val));
             tmpFiles.push({ tmp, target, backup: null });
@@ -355,6 +424,7 @@ const server = http.createServer(async (req, res) => {
             done++;
           }
         });
+        auditLog(currentUser, 'batch', 'keys=' + updates.map(u => u.key).join(','));
         res.writeHead(200); res.end('OK');
       } catch (e) {
         // 回滚：已替换的还原旧内容（原文件不存在则删除），未替换的删 tmp
@@ -415,6 +485,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: { message: '缺少 baseUrl / apiKey / model / messages，且服务端也没有可用配置' } }));
         return;
       }
+      auditLog(currentUser, 'llm', 'model=' + effModel + ' msgs=' + messages.length);
       const target = String(effBase).replace(/\/+$/, '') + '/chat/completions';
       // 防 SSRF：禁止把请求转发到本机/链路本地地址（大模型服务都是公网地址，正常使用不受影响）
       let upstreamHost = '';
@@ -538,13 +609,16 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+// 多用户模式：首次启用时把根目录旧数据迁移到默认用户名下（llmConfig 保持全局共享）
+migrateRootDataToDefaultUser();
+
 server.listen(PORT, HOST, () => {
   const addr = HOST ? `http://localhost:${PORT}` : `http://<电脑IP>:${PORT}（MCB_LAN=1 模式）`;
   console.log('==============================================');
   console.log(`✓ 新媒体数据工作台服务已启动`);
   console.log(`✓ 访问地址: ${addr}`);
-  console.log(`✓ 数据存储: ${DATA_DIR}`);
-  console.log(`✓ 访问令牌: ${ACCESS_TOKEN ? '已启用（服务器部署模式）' : '未启用（仅本机默认模式）'}`);
+  console.log(`✓ 数据存储: ${DATA_DIR}${MULTIUSER ? '（多用户模式：data/users/<用户名>/ 按登录用户隔离）' : ''}`);
+  console.log(`✓ 访问认证: ${MULTIUSER ? 'nginx 认证（X-Remote-User）' : ACCESS_TOKEN ? '访问令牌已启用' : '未启用（仅本机默认模式）'}`);
   console.log(`✓ 关闭服务: Ctrl+C`);
   console.log('==============================================');
 });

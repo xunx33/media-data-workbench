@@ -1,0 +1,44 @@
+# ============================================================
+# 新媒体数据工作台 · nginx 部署示例（多人使用 + 数据按用户隔离）
+# ============================================================
+# 架构：同事浏览器 → nginx（auth_basic 每人一个账号）→ 本机 127.0.0.1:3000（Node）
+#
+# 服务端启动（在项目目录）：
+#   set MCB_MULTIUSER=1
+#   set MCB_ALLOWED_HOSTS=media.example.internal
+#   node server.js
+#   （不要设 MCB_LAN=1：Node 必须只监听 127.0.0.1，否则同事可绕过 nginx 直连伪造身份）
+#   （首次启动会把 data/ 根下已有数据迁移到 MCB_DEFAULT_USER（默认 admin）名下）
+#
+# 创建同事账号（每行一个 账号:密码，密码用 openssl 生成）：
+#   openssl passwd -apr1 '同事的密码'   → 输出 $apr1$... 串
+#   把  zhangsan:$apr1$xxxx  写入 /etc/nginx/mcb_users（Linux）
+#   Windows nginx 路径示例：C:/nginx/conf/mcb_users
+#
+# nginx access.log 会记录每次请求的登录账号；Node 侧 data/activity.log
+# 记录每个用户的数据写入与 AI 调用（谁在什么时候写了什么）。
+
+server {
+    listen 80;
+    server_name media.example.internal;      # 换成你的服务器域名或内网 IP
+
+    # ---- 登录认证：每人一个账号 ----
+    auth_basic "新媒体数据工作台";
+    auth_basic_user_file /etc/nginx/mcb_users;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;                 # 后端 Host 白名单需包含此域名（MCB_ALLOWED_HOSTS）
+        proxy_set_header X-Remote-User $remote_user; # 关键：把登录账号传给后端做数据隔离
+        proxy_set_header Connection "";
+        proxy_read_timeout 300s;                     # AI 生成可能超过 1 分钟
+        proxy_send_timeout 300s;
+        client_max_body_size 200m;                   # 数据备份 JSON / 大文件上传
+    }
+
+    # 可选：HTTPS（有证书时放开并删掉上面的 listen 80）
+    # listen 443 ssl;
+    # ssl_certificate     /etc/nginx/ssl/mcb.crt;
+    # ssl_certificate_key /etc/nginx/ssl/mcb.key;
+}

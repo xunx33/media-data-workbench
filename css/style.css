@@ -128,6 +128,14 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 10.5px; color: var(--text3); margin-top: 2px;
   letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* 多用户模式：当前登录用户（nginx 认证注入，/api/me 返回） */
+.current-user {
+  flex-shrink: 0; align-self: center;
+  margin-left: 2px; padding: 3px 10px;
+  font-size: 11px; font-weight: 600; color: var(--text2);
+  background: var(--accent-soft); border: 1px solid var(--border-strong);
+  border-radius: 12px; white-space: nowrap;
+}
 
 /* Nav Tabs：右对齐、可横向滚动，去掉原来的居中伪元素技巧 */
 .nav-tabs {

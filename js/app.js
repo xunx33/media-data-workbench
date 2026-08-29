@@ -74,6 +74,11 @@ function checkWeeklyReminder() {
   if (window.storeReady) {
     try { await window.storeReady; } catch (e) { console.error('store 初始化失败', e); }
   }
+  // 当前登录用户（多用户模式由 nginx 注入 X-Remote-User，单用户模式返回空则不显示）
+  fetch('/api/me').then(r => r.json()).then(m => {
+    const el = document.getElementById('currentUser');
+    if (el && m && m.user) { el.textContent = '👤 ' + m.user; el.style.display = ''; }
+  }).catch(() => {});
   // 启动时同步分区 UI
   if (window.syncWorkspaceUI) window.syncWorkspaceUI();
   render();

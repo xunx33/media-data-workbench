@@ -49,12 +49,12 @@ function startServer(port, env) {
       env: Object.assign({}, process.env, { PORT: String(port), MCB_LAN: '1' }, env),
       stdio: 'ignore'
     });
-    // 轮询等端口就绪
+    // 轮询等端口就绪（401 = 多用户模式要求身份头，也代表服务已就绪）
     let tries = 0;
     const poll = async () => {
       tries++;
       const r = await request(port, 'GET', '/');
-      if (r.status === 200 || r.status === 302) return resolve(child);
+      if (r.status === 200 || r.status === 302 || r.status === 401) return resolve(child);
       if (tries > 50) return reject(new Error('服务器启动超时'));
       setTimeout(poll, 100);
     };
@@ -203,6 +203,74 @@ function stopServer(child) {
   }
   const p = path.join(ROOT, 'data', 'zz_test_sec.json');
   if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch (e) {} }
+
+  // ===== 实例 3：多用户模式（数据按登录用户隔离，llmConfig 全局共享） =====
+  console.log('\n[server-security] 多用户模式（MCB_MULTIUSER=1）');
+  const os = require('os');
+  const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'mcb-multi-'));
+  // 预置旧格式根数据：contents.json 应被迁移到默认用户名下，llmConfig.json 应保持全局
+  fs.writeFileSync(path.join(tmpData, 'contents.json'), JSON.stringify([{ id: 'legacy1', title: '旧数据' }]));
+  fs.writeFileSync(path.join(tmpData, 'llmConfig.json'), JSON.stringify({ baseUrl: 'https://api.g.com/v1', apiKey: 'sk-shared', model: 'm1' }));
+  let s3;
+  try {
+    s3 = await startServer(PORT2 + 1, {
+      MCB_MULTIUSER: '1',
+      MCB_DATA_DIR: tmpData,
+      MCB_DEFAULT_USER: 'boss',
+      MCB_ALLOWED_HOSTS: 'localhost,127.0.0.1'
+    });
+  } catch (e) {
+    console.log('  \u2717 多用户实例启动失败：' + e.message);
+    process.exit(1);
+  }
+  const P3 = PORT2 + 1;
+  const asUser = u => ({ headers: { 'X-Remote-User': u } });
+  try {
+    // 启动迁移：根目录 contents.json → users/boss/，llmConfig 留在全局
+    test('旧数据迁移到默认用户目录', fs.existsSync(path.join(tmpData, 'users', 'boss', 'contents.json')));
+    test('迁移后根目录不再有 contents.json', !fs.existsSync(path.join(tmpData, 'contents.json')));
+    test('llmConfig 保持全局共享', fs.existsSync(path.join(tmpData, 'llmConfig.json')));
+    const migrated = JSON.parse(fs.readFileSync(path.join(tmpData, 'users', 'boss', 'contents.json'), 'utf-8'));
+    test('迁移数据内容完整', migrated.length === 1 && migrated[0].id === 'legacy1');
+
+    // 缺身份头 → 401
+    let r = await request(P3, 'GET', '/api/data/contents');
+    test('多用户模式缺 X-Remote-User 被拒 401', r.status === 401, 'status=' + r.status);
+
+    // 用户隔离：alice 写入，boss 读不到
+    r = await request(P3, 'POST', '/api/data/contents', {
+      body: JSON.stringify([{ id: 'alice-1', title: 'alice的数据' }]),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('alice 正常写入', r.status === 200, 'status=' + r.status);
+    r = await request(P3, 'GET', '/api/data/contents', asUser('boss'));
+    test('boss 读不到 alice 的数据（隔离生效）', !r.body.includes('alice-1'), r.body.slice(0, 80));
+    r = await request(P3, 'GET', '/api/data/contents', asUser('alice'));
+    test('alice 能读到自己的数据', JSON.parse(r.body).length === 1, r.body.slice(0, 80));
+    r = await request(P3, 'GET', '/api/data/contents', asUser('boss'));
+    // boss 的目录里是迁移过来的旧数据
+    test('boss 读到的是自己名下的迁移数据', JSON.parse(r.body).length === 1 && JSON.parse(r.body)[0].id === 'legacy1', r.body.slice(0, 80));
+
+    // llmConfig 全局共享：alice 能读到共享 Key 标记（脱敏）
+    r = await request(P3, 'GET', '/api/data/llmConfig', asUser('alice'));
+    const masked = JSON.parse(r.body);
+    test('任意用户可读共享 llmConfig（脱敏）', masked.hasKey === true && masked.baseUrl === 'https://api.g.com/v1' && !masked.apiKey, r.body.slice(0, 120));
+
+    // 身份头非法字符被清洗（直连伪造已被 127.0.0.1 绑定挡住，这里是纵深防御）
+    r = await request(P3, 'GET', '/api/me', { headers: { 'X-Remote-User': '../evil' } });
+    test('非法用户名字符被清洗', r.status === 200 && JSON.parse(r.body).user === 'evil', r.body);
+
+    // /api/me 返回当前用户
+    r = await request(P3, 'GET', '/api/me', asUser('alice'));
+    test('/api/me 返回当前登录用户', JSON.parse(r.body).user === 'alice', r.body);
+
+    // 审计日志存在且有 alice 的写入记录
+    const logPath = path.join(tmpData, 'activity.log');
+    test('审计日志记录用户写入', fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf-8').includes('user=alice action=write key=contents'));
+  } finally {
+    await stopServer(s3);
+  }
+  try { fs.rmSync(tmpData, { recursive: true, force: true }); } catch (e) {}
 
   console.log('\n结果：通过 ' + passed + ' 项，失败 ' + failed + ' 项');
   if (failed > 0) {
