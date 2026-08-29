@@ -26,7 +26,8 @@ function applyLlmConfigFold() {
 }
 
 // AI 视频文案专家 / AI 数据分析专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
-const LLM_DAILY_LIMIT = 20;   // 展示兜底值：实际额度以服务端下发的 limit 为准（MCB_LLM_DAILY_LIMIT 可调）
+const LLM_DAILY_LIMIT = 20;        // 展示兜底值：AI 文案每日额度（实际以服务端下发的 chatLimit 为准，MCB_LLM_DAILY_LIMIT 可调）
+const LLM_REVIEW_DAILY_LIMIT = 5;  // 展示兜底值：AI 数据分析每日额度（实际以服务端下发的 reviewLimit 为准，MCB_REVIEW_DAILY_LIMIT 可调）
 const LLM_MAX_CHARS = 3000;   // 单条消息最大字数
 
 let __llmQuota = { date: '', chat: 0, review: 0 };
@@ -36,19 +37,20 @@ async function loadLlmQuota() {
   const d = getToday();
   try {
     const q = await loadData('llmQuota');
-    // 服务端动态生成（跨天自动归零），并下发 limit（MCB_LLM_DAILY_LIMIT 可调），前端展示跟随服务端口径
+    // 服务端动态生成（跨天自动归零），并下发分类额度（chatLimit/reviewLimit，环境变量可调），前端展示跟随服务端口径
     if (q && typeof q === 'object' && !Array.isArray(q) && q.date && typeof q.chat === 'number') {
       __llmQuota = {
         date: q.date,
         chat: q.chat,
         review: typeof q.review === 'number' ? q.review : 0,
-        limit: typeof q.limit === 'number' ? q.limit : LLM_DAILY_LIMIT
+        chatLimit: typeof q.chatLimit === 'number' ? q.chatLimit : (typeof q.limit === 'number' ? q.limit : LLM_DAILY_LIMIT),
+        reviewLimit: typeof q.reviewLimit === 'number' ? q.reviewLimit : LLM_REVIEW_DAILY_LIMIT
       };
     } else {
-      __llmQuota = { date: d, chat: 0, review: 0, limit: LLM_DAILY_LIMIT };
+      __llmQuota = { date: d, chat: 0, review: 0, chatLimit: LLM_DAILY_LIMIT, reviewLimit: LLM_REVIEW_DAILY_LIMIT };
     }
   } catch (e) {
-    __llmQuota = { date: d, chat: 0, review: 0, limit: LLM_DAILY_LIMIT };
+    __llmQuota = { date: d, chat: 0, review: 0, chatLimit: LLM_DAILY_LIMIT, reviewLimit: LLM_REVIEW_DAILY_LIMIT };
   }
   __llmQuotaLoaded = true;
 }
@@ -59,7 +61,7 @@ function __quotaKey(type) {
 // 未加载完成前返回满额（不误伤），渲染后的下一次更新会校正
 function llmQuotaRemaining(type) {
   const key = __quotaKey(type);
-  const limit = (__llmQuota && __llmQuota.limit) || LLM_DAILY_LIMIT;
+  const limit = (__llmQuota && __llmQuota[key + 'Limit']) || (key === 'review' ? LLM_REVIEW_DAILY_LIMIT : LLM_DAILY_LIMIT);
   return __llmQuotaLoaded ? Math.max(0, limit - (__llmQuota[key] || 0)) : limit;
 }
 // 扣减/退还已移至服务端（/api/llm/chat 内校验+扣减，失败与取消自动退还）；

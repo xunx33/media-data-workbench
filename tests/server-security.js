@@ -312,10 +312,22 @@ function stopServer(child) {
     const bobQuotaPath = path.join(tmpData, 'users', 'bob', 'llmQuota.json');
     const bobQuota = fs.existsSync(bobQuotaPath) ? JSON.parse(fs.readFileSync(bobQuotaPath, 'utf-8')) : { chat: 0 };
     test('SSRF 被拦的请求不消耗额度', (bobQuota.chat || 0) === 0, JSON.stringify(bobQuota));
-    // GET llmQuota 由服务端动态生成并下发 limit
+    // GET llmQuota 由服务端动态生成并下发 limit（chat 20 / review 5 两类独立）
     r = await request(P3, 'GET', '/api/data/llmQuota', asUser('alice'));
     const quotaView = JSON.parse(r.body);
-    test('GET llmQuota 服务端生成并附 limit', quotaView.limit === 20 && quotaView.date === today && quotaView.chat === 999, r.body.slice(0, 120));
+    test('GET llmQuota 服务端生成并附 limit', quotaView.limit === 20 && quotaView.chatLimit === 20 && quotaView.reviewLimit === 5 && quotaView.date === today && quotaView.chat === 999, r.body.slice(0, 120));
+    // review（AI 数据分析）独立上限 5 次：review 用尽但 chat 未用 → review 429、chat 放行
+    fs.writeFileSync(path.join(tmpData, 'users', 'alice', 'llmQuota.json'), JSON.stringify({ date: today, chat: 0, review: 5 }));
+    r = await request(P3, 'POST', '/api/llm/chat', {
+      body: JSON.stringify({ baseUrl: 'https://api.g.com/v1', apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], quotaType: 'review' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('review 额度用尽 429（每日 5 次独立于 chat）', r.status === 429 && r.body.includes('数据分析') && r.body.includes('5 次'), 'status=' + r.status + ' ' + r.body.slice(0, 100));
+    r = await request(P3, 'POST', '/api/llm/chat', {
+      body: JSON.stringify({ baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], quotaType: 'chat' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('review 用尽不影响 chat 额度（放行后被 SSRF 拦 403）', r.status === 403 && r.body.includes('本机'), 'status=' + r.status + ' ' + r.body.slice(0, 100));
   } finally {
     await stopServer(s3);
   }

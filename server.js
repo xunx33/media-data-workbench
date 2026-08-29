@@ -44,7 +44,10 @@ const USERS_DIR = path.join(DATA_DIR, 'users');
 const LIMIT_DATA = 10 * 1024 * 1024;   // 单 key / batch 写入
 const LIMIT_LLM = 2 * 1024 * 1024;     // LLM 消息体
 // AI 每日额度（服务端权威管理：每用户每天每类上限，前端仅展示）
-const LLM_DAILY_LIMIT = parseInt(process.env.MCB_LLM_DAILY_LIMIT, 10) || 20;
+const LLM_DAILY_LIMIT = parseInt(process.env.MCB_LLM_DAILY_LIMIT, 10) || 20;        // AI 视频文案专家（chat）
+const LLM_REVIEW_DAILY_LIMIT = parseInt(process.env.MCB_REVIEW_DAILY_LIMIT, 10) || 5; // AI 数据分析专家（review）
+// 按额度类型取当日上限
+function llmLimitFor(type) { return type === 'review' ? LLM_REVIEW_DAILY_LIMIT : LLM_DAILY_LIMIT; }
 
 // 首次启动自动创建数据目录
 if (!fs.existsSync(DATA_DIR)) {
@@ -252,7 +255,7 @@ function llmQuotaRead(user) {
 function llmQuotaConsume(user, type) {
   const key = type === 'review' ? 'review' : 'chat';
   const q = llmQuotaRead(user);
-  if (q[key] >= LLM_DAILY_LIMIT) return false;
+  if (q[key] >= llmLimitFor(type)) return false;
   q[key]++;
   atomicWrite(path.join(keyBaseDir('llmQuota', user), 'llmQuota.json'), JSON.stringify(q));
   return true;
@@ -385,7 +388,9 @@ const server = http.createServer(async (req, res) => {
         text = JSON.stringify(maskLlmConfig(readDataFile('llmConfig')));
       } else if (key === 'llmQuota') {
         const q = llmQuotaRead(currentUser);
-        q.limit = LLM_DAILY_LIMIT;
+        q.chatLimit = LLM_DAILY_LIMIT;
+        q.reviewLimit = LLM_REVIEW_DAILY_LIMIT;
+        q.limit = LLM_DAILY_LIMIT; // 兼容旧前端的兜底字段
         text = JSON.stringify(q);
       } else {
         const raw = readDataFile(key, keyBaseDir(key, currentUser));
@@ -575,7 +580,7 @@ const server = http.createServer(async (req, res) => {
       await enqueueWrite(() => { consumed = llmQuotaConsume(currentUser, quotaType); });
       if (!consumed) {
         res.writeHead(429, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: '今日 AI 额度已用尽（每类每日 ' + LLM_DAILY_LIMIT + ' 次），明天再来' } }));
+        res.end(JSON.stringify({ error: { message: '今日' + (quotaType === 'review' ? ' AI 数据分析' : ' AI 文案') + '额度已用尽（每日 ' + llmLimitFor(quotaType) + ' 次），明天再来' } }));
         return;
       }
       // 失败/取消退还：上游连接失败、超时、返回 4xx/5xx、客户端中途取消都不计次
