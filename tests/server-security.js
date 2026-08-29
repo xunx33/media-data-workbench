@@ -281,6 +281,41 @@ function stopServer(child) {
       headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('boss').headers)
     });
     test('管理员可正常修改共享 AI 配置', r.status === 200, 'status=' + r.status);
+
+    // ===== 服务端 AI 额度 =====
+    const today = new Date().toISOString().slice(0, 10);
+    // alice 额度耗尽 → /api/llm/chat 429（服务端权威校验，绕过页面也没用）
+    fs.writeFileSync(path.join(tmpData, 'users', 'alice', 'llmQuota.json'), JSON.stringify({ date: today, chat: 999, review: 0 }));
+    r = await request(P3, 'POST', '/api/llm/chat', {
+      body: JSON.stringify({ baseUrl: 'https://api.g.com/v1', apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], quotaType: 'chat' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('额度用尽的用户调用 AI 被拒 429', r.status === 429 && r.body.includes('额度已用尽'), 'status=' + r.status + ' ' + r.body.slice(0, 100));
+    // llmQuota 是服务端专管文件：客户端不可写
+    r = await request(P3, 'POST', '/api/data/llmQuota', {
+      body: JSON.stringify({ date: today, chat: 0, review: 0 }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('客户端写 llmQuota 被拒 403（防自行重置额度）', r.status === 403, 'status=' + r.status);
+    r = await request(P3, 'POST', '/api/data/batch', {
+      body: JSON.stringify([{ key: 'llmQuota', val: { date: today, chat: 0, review: 0 } }]),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('batch 写 llmQuota 同样被拒 403', r.status === 403, 'status=' + r.status);
+    // bob 额度未用尽 → 通过额度关（被后续 SSRF 拦截返回 403，证明未到上游、且未真实消耗）
+    r = await request(P3, 'POST', '/api/llm/chat', {
+      body: JSON.stringify({ baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'k', model: 'm', messages: [{ role: 'user', content: 'hi' }], quotaType: 'chat' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('bob').headers)
+    });
+    test('额度未用尽通过校验（被 SSRF 拦截 403）', r.status === 403 && r.body.includes('本机'), 'status=' + r.status);
+    // SSRF 被拦发生在扣减之前 → bob 的额度文件尚未创建（即未消耗）；若存在也必须是 0
+    const bobQuotaPath = path.join(tmpData, 'users', 'bob', 'llmQuota.json');
+    const bobQuota = fs.existsSync(bobQuotaPath) ? JSON.parse(fs.readFileSync(bobQuotaPath, 'utf-8')) : { chat: 0 };
+    test('SSRF 被拦的请求不消耗额度', (bobQuota.chat || 0) === 0, JSON.stringify(bobQuota));
+    // GET llmQuota 由服务端动态生成并下发 limit
+    r = await request(P3, 'GET', '/api/data/llmQuota', asUser('alice'));
+    const quotaView = JSON.parse(r.body);
+    test('GET llmQuota 服务端生成并附 limit', quotaView.limit === 20 && quotaView.date === today && quotaView.chat === 999, r.body.slice(0, 120));
   } finally {
     await stopServer(s3);
   }

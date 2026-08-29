@@ -43,6 +43,8 @@ const USERS_DIR = path.join(DATA_DIR, 'users');
 // 各写接口请求体上限
 const LIMIT_DATA = 10 * 1024 * 1024;   // 单 key / batch 写入
 const LIMIT_LLM = 2 * 1024 * 1024;     // LLM 消息体
+// AI 每日额度（服务端权威管理：每用户每天每类上限，前端仅展示）
+const LLM_DAILY_LIMIT = parseInt(process.env.MCB_LLM_DAILY_LIMIT, 10) || 20;
 
 // 首次启动自动创建数据目录
 if (!fs.existsSync(DATA_DIR)) {
@@ -233,6 +235,38 @@ function maskLlmConfig(rawText) {
   return masked;
 }
 
+// ===== AI 每日额度（服务端专管：llmQuota 文件前端只读，写入只发生在本文件） =====
+function llmQuotaRead(user) {
+  const today = new Date().toISOString().slice(0, 10);
+  const q = { date: today, chat: 0, review: 0 };
+  try {
+    const raw = JSON.parse(readDataFile('llmQuota', keyBaseDir('llmQuota', user)) || 'null');
+    if (raw && typeof raw === 'object' && raw.date === today) {
+      q.chat = Number(raw.chat) || 0;
+      q.review = Number(raw.review) || 0;
+    }
+  } catch (e) { /* 损坏文件视为当日零计数 */ }
+  return q;
+}
+// 扣减一次额度；返回是否成功（false=当日已用尽）。须在 enqueueWrite 内调用保证串行
+function llmQuotaConsume(user, type) {
+  const key = type === 'review' ? 'review' : 'chat';
+  const q = llmQuotaRead(user);
+  if (q[key] >= LLM_DAILY_LIMIT) return false;
+  q[key]++;
+  atomicWrite(path.join(keyBaseDir('llmQuota', user), 'llmQuota.json'), JSON.stringify(q));
+  return true;
+}
+// 失败/取消退还一次额度
+function llmQuotaRefund(user, type) {
+  const key = type === 'review' ? 'review' : 'chat';
+  const q = llmQuotaRead(user);
+  if (q[key] > 0) {
+    q[key]--;
+    atomicWrite(path.join(keyBaseDir('llmQuota', user), 'llmQuota.json'), JSON.stringify(q));
+  }
+}
+
 // ===== 登录页（仅 ACCESS_TOKEN 模式使用） =====
 const LOGIN_PAGE = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
   '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>访问验证</title></head>' +
@@ -342,14 +376,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API：GET /api/data/{key} → 读取（llmConfig 脱敏且全局共享；其余按用户隔离）
+    // API：GET /api/data/{key} → 读取（llmConfig 脱敏且全局共享；llmQuota 服务端动态生成并附 limit；其余按用户隔离）
     if (req.method === 'GET' && url.startsWith('/api/data/')) {
       const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
       if (!key) { res.writeHead(400); res.end('Invalid key'); return; }
-      const raw = readDataFile(key, keyBaseDir(key, currentUser));
-      const text = key === 'llmConfig'
-        ? JSON.stringify(maskLlmConfig(raw))
-        : (raw !== null ? raw : '[]');
+      let text;
+      if (key === 'llmConfig') {
+        text = JSON.stringify(maskLlmConfig(readDataFile('llmConfig')));
+      } else if (key === 'llmQuota') {
+        const q = llmQuotaRead(currentUser);
+        q.limit = LLM_DAILY_LIMIT;
+        text = JSON.stringify(q);
+      } else {
+        const raw = readDataFile(key, keyBaseDir(key, currentUser));
+        text = raw !== null ? raw : '[]';
+      }
       res.writeHead(200, { 'Content-Type': MIME['.json'] });
       res.end(text);
       return;
@@ -364,6 +405,13 @@ const server = http.createServer(async (req, res) => {
         auditLog(currentUser, 'deny', 'llmConfig 非管理员');
         res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('403 仅管理员可修改 AI 配置');
+        return;
+      }
+      // AI 额度由服务端专管（/api/llm/chat 内校验+扣减），禁止客户端直接写入
+      if (key === 'llmQuota') {
+        auditLog(currentUser, 'deny', 'llmQuota 服务端专管');
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('403 AI 额度由服务端管理');
         return;
       }
       if (!isJsonContentType(req)) {
@@ -418,6 +466,13 @@ const server = http.createServer(async (req, res) => {
           auditLog(currentUser, 'deny', 'llmConfig batch 非管理员');
           res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
           res.end('403 仅管理员可修改 AI 配置');
+          return;
+        }
+        // AI 额度由服务端专管
+        if (item.key === 'llmQuota') {
+          auditLog(currentUser, 'deny', 'llmQuota batch 服务端专管');
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('403 AI 额度由服务端管理');
           return;
         }
         if (item.key === 'llmConfig') {
@@ -514,12 +569,30 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: { message: '不允许转发到本机/链路本地地址' } }));
         return;
       }
+      // 服务端额度校验+扣减（每用户每天每类上限；llmQuota 由服务端专管，前端只读展示）
+      const quotaType = cfg.quotaType === 'review' ? 'review' : 'chat';
+      let consumed = false;
+      await enqueueWrite(() => { consumed = llmQuotaConsume(currentUser, quotaType); });
+      if (!consumed) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: '今日 AI 额度已用尽（每类每日 ' + LLM_DAILY_LIMIT + ' 次），明天再来' } }));
+        return;
+      }
+      // 失败/取消退还：上游连接失败、超时、返回 4xx/5xx、客户端中途取消都不计次
+      const refundQuota = () => { try { enqueueWrite(() => llmQuotaRefund(currentUser, quotaType)); } catch (e) {} };
       const mod = /^https:/i.test(target) ? https : http;
       const upstreamBody = { model: effModel, messages };
       if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
         upstreamBody.temperature = Number(temperature);
       }
       let responded = false;
+      // 客户端中途取消（用户点取消/关页面）→ 中止上游并退还额度
+      res.on('close', () => {
+        if (responded) return;
+        responded = true;
+        try { upstream.destroy(); } catch (e) {}
+        refundQuota();
+      });
       const upstream = mod.request(target, {
         method: 'POST',
         headers: {
@@ -532,6 +605,8 @@ const server = http.createServer(async (req, res) => {
         up.on('end', () => {
           if (responded) return;
           responded = true;
+          // 上游报错（4xx/5xx，如 Key 失效/限流）→ 透传错误并退还额度
+          if ((up.statusCode || 0) >= 400) refundQuota();
           res.writeHead(up.statusCode || 502, { 'Content-Type': up.headers['content-type'] || 'application/json' });
           res.end(Buffer.concat(chunks));
         });
@@ -540,6 +615,7 @@ const server = http.createServer(async (req, res) => {
       upstream.on('error', (e) => {
         if (responded) return;
         responded = true;
+        refundQuota();
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: '无法连接大模型服务：' + e.message } }));
       });

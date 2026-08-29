@@ -26,7 +26,7 @@ function applyLlmConfigFold() {
 }
 
 // AI 视频文案专家 / AI 数据分析专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
-const LLM_DAILY_LIMIT = 20;   // 每类每日上限
+const LLM_DAILY_LIMIT = 20;   // 展示兜底值：实际额度以服务端下发的 limit 为准（MCB_LLM_DAILY_LIMIT 可调）
 const LLM_MAX_CHARS = 3000;   // 单条消息最大字数
 
 let __llmQuota = { date: '', chat: 0, review: 0 };
@@ -36,19 +36,19 @@ async function loadLlmQuota() {
   const d = getToday();
   try {
     const q = await loadData('llmQuota');
-    if (q && typeof q === 'object' && !Array.isArray(q) && q.date && (typeof q.chat === 'number' || typeof q.count === 'number')) {
-      // 兼容旧格式：{date,count} → chat；GEO 已移除，其计数 {geo} 转给「AI 数据分析专家」；dissect（视频拆解）已下线，忽略
+    // 服务端动态生成（跨天自动归零），并下发 limit（MCB_LLM_DAILY_LIMIT 可调），前端展示跟随服务端口径
+    if (q && typeof q === 'object' && !Array.isArray(q) && q.date && typeof q.chat === 'number') {
       __llmQuota = {
         date: q.date,
-        chat: typeof q.chat === 'number' ? q.chat : (q.count || 0),
-        review: typeof q.review === 'number' ? q.review : (q.geo || 0)
+        chat: q.chat,
+        review: typeof q.review === 'number' ? q.review : 0,
+        limit: typeof q.limit === 'number' ? q.limit : LLM_DAILY_LIMIT
       };
     } else {
-      __llmQuota = { date: d, chat: 0, review: 0 };
+      __llmQuota = { date: d, chat: 0, review: 0, limit: LLM_DAILY_LIMIT };
     }
-    if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };   // 跨天重置
   } catch (e) {
-    __llmQuota = { date: d, chat: 0, review: 0 };
+    __llmQuota = { date: d, chat: 0, review: 0, limit: LLM_DAILY_LIMIT };
   }
   __llmQuotaLoaded = true;
 }
@@ -59,22 +59,13 @@ function __quotaKey(type) {
 // 未加载完成前返回满额（不误伤），渲染后的下一次更新会校正
 function llmQuotaRemaining(type) {
   const key = __quotaKey(type);
-  return __llmQuotaLoaded ? Math.max(0, LLM_DAILY_LIMIT - (__llmQuota[key] || 0)) : LLM_DAILY_LIMIT;
+  const limit = (__llmQuota && __llmQuota.limit) || LLM_DAILY_LIMIT;
+  return __llmQuotaLoaded ? Math.max(0, limit - (__llmQuota[key] || 0)) : limit;
 }
-async function llmQuotaConsume(type) {
-  const d = getToday();
-  const key = __quotaKey(type);
-  if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };
-  __llmQuota[key]++;
-  await saveData('llmQuota', __llmQuota);
-  return llmQuotaRemaining(type);
-}
-async function llmQuotaRefund(type) {
-  const key = __quotaKey(type);
-  if (__llmQuota[key] > 0) {
-    __llmQuota[key]--;
-    await saveData('llmQuota', __llmQuota);
-  }
+// 扣减/退还已移至服务端（/api/llm/chat 内校验+扣减，失败与取消自动退还）；
+// 前端只负责展示——调用结束后调用本函数从服务端刷新最新额度
+async function refreshLlmQuota() {
+  await loadLlmQuota();
 }
 // 页面加载即拉取额度（与 store 初始化并行，随后续渲染校正显示）
 loadLlmQuota();
@@ -200,8 +191,8 @@ function clearLLMConfig() {
 // ===== 底层请求：OpenAI 兼容 chat/completions（经本地服务器 /api/llm/chat 代理转发）=====
 // 前端直连会被浏览器跨域（CORS）拦截：千问 token-plan 专属域名（token-plan.*.maas.aliyuncs.com）
 // 等不返回 CORS 响应头，浏览器直接 fetch 会报 Failed to fetch；改由本地 Node 服务端转发即可绕过。
-async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
-  const body = { baseUrl: String(baseUrl).replace(/\/+$/, ''), apiKey: apiKey || '', model: model, messages: messages };
+async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal, quotaType) {
+  const body = { baseUrl: String(baseUrl).replace(/\/+$/, ''), apiKey: apiKey || '', model: model, messages: messages, quotaType: quotaType === 'review' ? 'review' : 'chat' };
   // temperature 仅在校验通过（0~2 数字）时透传；未填/无效则不传，避免部分服务端报错
   if (temperature !== undefined && temperature !== null && temperature !== '' && !isNaN(Number(temperature))) {
     body.temperature = Number(temperature);
@@ -226,14 +217,14 @@ async function chatRaw(baseUrl, apiKey, model, messages, temperature, signal) {
   return String(text);
 }
 
-// 供后续 AI 功能复用的通用调用（使用已保存配置）
-async function chatLLM(messages, signal) {
+// 供后续 AI 功能复用的通用调用（使用已保存配置）；quotaType 决定服务端扣哪类额度（chat/review）
+async function chatLLM(messages, signal, quotaType) {
   const cfg = llmConfig || {};
   if (!cfg.baseUrl || !(cfg.apiKey || cfg.hasKey) || !cfg.model) {
     throw new Error('尚未配置大模型，请先在上方填写并保存配置');
   }
   // apiKey 可为空（脱敏下发），服务端代理会用已存 Key 兜底
-  return chatRaw(cfg.baseUrl, cfg.apiKey || '', cfg.model, messages, cfg.temperature, signal);
+  return chatRaw(cfg.baseUrl, cfg.apiKey || '', cfg.model, messages, cfg.temperature, signal, quotaType);
 }
 
 // ===== 测试连接：用表单当前值直连（不要求先保存）=====
@@ -500,8 +491,8 @@ async function runOverviewAiReview() {
   // 在操作区域显示取消按钮
   const actionsEl = document.getElementById('overviewAiActions');
   if (actionsEl) actionsEl.innerHTML = '<button class="btn-cancel" onclick="cancelAiReview()">取消</button>';
-  await llmQuotaConsume('review');
-  const refreshQuota = () => {
+  const refreshQuota = async () => {
+    await loadLlmQuota();
     const el = document.getElementById('overviewAiQuota');
     if (el) el.textContent = '今日 AI 数据分析剩余 ' + llmQuotaRemaining('review') + ' 次';
   };
@@ -509,14 +500,13 @@ async function runOverviewAiReview() {
     const reply = await chatLLM([
       { role: 'system', content: buildAiReviewSystemPrompt(range.label, monthsText, ws === 'video') },
       { role: 'user', content: '以下是 ' + range.label + ' 导出的数据表：\n\n' + buildOverviewReviewData(range) }
-    ], __aiReviewController.signal);
+    ], __aiReviewController.signal, 'review');
     __aiReviewCompleted = true;
     __aiReviewReplies[ws] = reply;
-    refreshQuota();
+    await refreshQuota();
   } catch (e) {
     if (e.name !== 'AbortError') {
-      await llmQuotaRefund('review');
-      refreshQuota();
+      await refreshQuota();
       if (document.getElementById('overviewAiOutput')) {
         document.getElementById('overviewAiOutput').innerHTML = '<div class="llm-error">请求失败：' + escapeHtml(e.message) + '</div>';
       }
@@ -532,8 +522,7 @@ async function runOverviewAiReview() {
 function cancelAiReview() {
   if (__aiReviewController) { __aiReviewController.abort(); __aiReviewController = null; }
   __overviewAiBusy = false;
-  // 未拿到结果前取消 → 退还本次额度（已完成后取消则不退，避免重复退款）
-  if (!__aiReviewCompleted) llmQuotaRefund('review');
+  // 未拿到结果前取消的额度退还由服务端处理（客户端中断 → 代理检测连接关闭自动退还）
   __aiReviewReplies['video'] = '';
   const out = document.getElementById('overviewAiOutput');
   if (out) out.innerHTML = '<div class="llm-error" style="color:var(--text3);">已取消运行</div>';
@@ -650,34 +639,32 @@ async function generateAiVideoCopy() {
   // 在操作区域显示取消按钮
   const actionsEl = document.getElementById('aiCopyActions');
   if (actionsEl) actionsEl.innerHTML = '<button class="btn-cancel" onclick="cancelAiCopy()">取消</button>';
-  // 扣减额度（等请求真正开始前计数，失败时下方 llmQuotaRefund 退还）
-  await llmQuotaConsume('chat');
 
   try {
     const systemPrompt = buildVideoCopyPrompt(platform, topic, selling, remark);
     const reply = await chatRaw(cfg.baseUrl, cfg.apiKey || '', cfg.model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: `请为${platform}平台生成关于「${topic}」的视频标题、描述、标签文案` }
-    ], cfg.temperature, __aiCopyController.signal);
+    ], cfg.temperature, __aiCopyController.signal, 'chat');
 
     __aiCopyResult = parseVideoCopyResult(reply);
-    // AI 返回格式异常（未解析出任何文案）→ 提示并退还额度，右侧不留白板
+    // AI 返回格式异常（未解析出任何文案）→ 提示用户（额度退还由服务端在上游异常时处理；
+    // 解析失败但上游成功属于正常消耗，不退还）
     if (!__aiCopyResult.titles.length && !__aiCopyResult.description) {
       __aiCopyResult = null;
-      showToast('AI 返回格式异常，未解析出文案，额度已退还');
-      await llmQuotaRefund('chat');
+      showToast('AI 返回格式异常，未解析出文案，请调整选题后重试');
     }
   } catch (e) {
-    // 取消/失败都退还：未拿到结果不消耗额度（与 AI 数据分析专家口径一致）
+    // 额度扣减与失败/取消退还均由服务端处理；这里只做提示与刷新展示
     __aiCopyResult = null;
-    showToast(e.name === 'AbortError' ? '已取消生成（额度已退还）' : '生成失败：' + e.message);
-    await llmQuotaRefund('chat');
+    showToast(e.name === 'AbortError' ? '已取消生成' : '生成失败：' + e.message);
   }
-  
+
   __aiCopyLoading = false;
   __aiCopyController = null;
   // 重绘页面以刷新结果和标题栏按钮
   render();
+  await loadLlmQuota();
   const qEl = document.getElementById('aiCopyQuota');
   if (qEl) qEl.textContent = '今日 AI 视频文案专家剩余 ' + llmQuotaRemaining('chat') + ' 次';
 }
