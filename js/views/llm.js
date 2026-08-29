@@ -25,11 +25,11 @@ function applyLlmConfigFold() {
   }
 }
 
-// AI 视频拆解专家 / AI 视频文案专家 / AI 数据分析专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
+// AI 视频文案专家 / AI 数据分析专家的每日额度（各自计数，存 data/llmQuota.json 走服务端，清浏览器缓存不影响）
 const LLM_DAILY_LIMIT = 20;   // 每类每日上限
 const LLM_MAX_CHARS = 3000;   // 单条消息最大字数
 
-let __llmQuota = { date: '', chat: 0, review: 0, dissect: 0 };
+let __llmQuota = { date: '', chat: 0, review: 0 };
 let __llmQuotaLoaded = false;
 
 async function loadLlmQuota() {
@@ -37,25 +37,23 @@ async function loadLlmQuota() {
   try {
     const q = await loadData('llmQuota');
     if (q && typeof q === 'object' && !Array.isArray(q) && q.date && (typeof q.chat === 'number' || typeof q.count === 'number')) {
-      // 兼容旧格式：{date,count} → chat；GEO 已移除，其计数 {geo} 转给「AI 数据分析专家」
+      // 兼容旧格式：{date,count} → chat；GEO 已移除，其计数 {geo} 转给「AI 数据分析专家」；dissect（视频拆解）已下线，忽略
       __llmQuota = {
         date: q.date,
         chat: typeof q.chat === 'number' ? q.chat : (q.count || 0),
-        review: typeof q.review === 'number' ? q.review : (q.geo || 0),
-        dissect: typeof q.dissect === 'number' ? q.dissect : 0
+        review: typeof q.review === 'number' ? q.review : (q.geo || 0)
       };
     } else {
-      __llmQuota = { date: d, chat: 0, review: 0, dissect: 0 };
+      __llmQuota = { date: d, chat: 0, review: 0 };
     }
-    if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0, dissect: 0 };   // 跨天重置
+    if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };   // 跨天重置
   } catch (e) {
-    __llmQuota = { date: d, chat: 0, review: 0, dissect: 0 };
+    __llmQuota = { date: d, chat: 0, review: 0 };
   }
   __llmQuotaLoaded = true;
 }
 function __quotaKey(type) {
   if (type === 'review') return 'review';
-  if (type === 'dissect') return 'dissect';
   return 'chat';
 }
 // 未加载完成前返回满额（不误伤），渲染后的下一次更新会校正
@@ -66,7 +64,7 @@ function llmQuotaRemaining(type) {
 async function llmQuotaConsume(type) {
   const d = getToday();
   const key = __quotaKey(type);
-  if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0, dissect: 0 };
+  if (__llmQuota.date !== d) __llmQuota = { date: d, chat: 0, review: 0 };
   __llmQuota[key]++;
   await saveData('llmQuota', __llmQuota);
   return llmQuotaRemaining(type);
@@ -143,7 +141,6 @@ function renderLLMConfig() {
       <div class="llm-hint">配置只保存在本机 data/ 目录，不会上传代码仓库；「清空数据」不会清除此处配置。</div>
       </div>
     </div>
-    ${renderAiVideoDissectCard()}
     ${renderAiVideoCopyCard()}
     ${renderAiReviewCard()}
   </div>`;
@@ -801,467 +798,5 @@ function cancelAiCopy() {
   const actionsEl = document.getElementById('aiCopyActions');
   if (actionsEl) actionsEl.innerHTML = '<button class="btn-save" onclick="generateAiVideoCopy()">AI 生成描述</button>';
   showToast('已取消生成');
-}
-
-// ===== AI 视频拆解专家（识别拆解视频 → 去重二创方案）=====
-// 多模态：视频直接以 video_url(base64) 发给支持视觉的模型（如 qwen3.7-plus）
-// 接口请求体上限实测约 9.8MB（base64 后）→ 直发原始视频上限约 7MB；超过则压缩；优先本机 ffmpeg（零下载），未安装才加载 ffmpeg.wasm
-const AI_DISSECT_MAX_BYTES = 10 * 1024 * 1024;   // 推荐上限：超此值建议压缩
-const AI_DISSECT_TARGET_BYTES = 7 * 1024 * 1024;  // 压缩目标：一般压到 7MB 以内
-
-let __aiDissectFile = null;        // 当前选中的视频 File
-let __aiDissectMeta = null;        // {size, duration, compressed, note}
-let __aiDissectLoading = false;
-let __aiDissectCompressing = false; // 压缩进行中（压缩与拆解分离：压缩完成后需再次点击才开始拆解）
-let __aiDissectCompressed = null;   // 压缩后的视频 Blob 缓存（拆解时优先使用，避免重复压缩）
-let __aiDissectCompressText = '';   // 压缩进度文本（显示在右侧输出结果栏）
-let __aiDissectResult = null;
-let __aiDissectError = '';         // 拆解失败原因（持久显示在结果栏，避免被后续 toast 覆盖）
-let __aiDissectDuration = '30';    // 二创时长（秒，下拉选择）
-let __aiDissectStyle = '自动';      // 口播风格（下拉选择：自动/新闻/幽默/干货/犀利/煽情）
-let __aiDissectNote = '';          // 补充要求（可选，自由文本，含品牌植入等自定义需求）
-let __aiDissectRunId = 0;          // 自增，防止旧回调污染新状态
-let __aiDissectCompressCtrl = null; // 压缩取消控制器（AbortController）
-let __aiDissectAbortCtrl = null;   // 拆解取消控制器（AbortController）
-
-// 取消压缩：中断压缩流程，保留原文件可重新点击压缩
-function cancelDissectCompress() {
-  if (__aiDissectCompressCtrl) __aiDissectCompressCtrl.abort();
-}
-function cancelDissectAnalysis() {
-  if (__aiDissectAbortCtrl) __aiDissectAbortCtrl.abort();
-}
-
-function formatBytes(n) {
-  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + 'MB';
-  if (n >= 1024) return (n / 1024).toFixed(1) + 'KB';
-  return n + 'B';
-}
-function formatDuration(s) {
-  s = Math.round(s || 0);
-  const m = Math.floor(s / 60), sec = s % 60;
-  return m > 0 ? m + '分' + String(sec).padStart(2, '0') + '秒' : sec + '秒';
-}
-
-// 卡片：上传视频 + 输出（与其余 AI 专家一致的双栏布局）
-function renderAiVideoDissectCard() {
-  const cfg = llmConfig || {};
-  const configured = cfg.baseUrl && cfg.apiKey && cfg.model;
-  const isRunning = __aiDissectLoading;
-  return `<div class="ai-split">
-      <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 视频拆解专家</span>${renderLlmStatusBadge()}</div>
-        <div class="ai-panel-body">
-          <div class="ai-feature-sub">上传视频，AI 拆解原视频内容并生成去重二创口播稿与分镜画面建议</div>
-          <div class="form-group"><label>上传视频</label>
-              <div class="upload-zone" id="aiDissectZone" ${isRunning || __aiDissectCompressing ? 'style="pointer-events:none;opacity:0.5;"' : ''} onclick="document.getElementById('aiDissectFile').click()"
-              ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
-              ondragleave="this.style.borderColor=''"
-              ondrop="event.preventDefault();this.style.borderColor='';if(event.dataTransfer.files.length>0)handleAiDissectFile(event.dataTransfer.files[0])">
-              <div class="upload-icon">&#127916;</div>
-              <div>${__aiDissectFile ? '已选择：' + escapeHtml(__aiDissectFile.name) : '点击选择视频，或拖拽到此处'}</div>
-              ${__aiDissectMeta ? '<div style="font-size:11px;color:var(--text3);margin-top:4px;">' + formatBytes(__aiDissectMeta.size) + ' · ' + formatDuration(__aiDissectMeta.duration) + (__aiDissectCompressed ? ' · 已压缩 ' + formatBytes(__aiDissectCompressed.size) : '') + '</div>' : '<div style="font-size:11px;color:var(--text3);margin-top:4px;">支持 mp4/mov/webm 等格式</div>'}
-            </div>
-            <input type="file" id="aiDissectFile" accept="video/*" style="display:none;" ${isRunning || __aiDissectCompressing ? 'disabled' : ''} onchange="handleAiDissectFile(this.files[0])">
-          </div>
-          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="form-group"><label>二创时长</label>
-              <select ${isRunning ? 'disabled' : ''} onchange="__aiDissectDuration=this.value">
-                ${['15', '30', '45', '60', '90'].map(d => `<option value="${d}" ${String(__aiDissectDuration) === d ? 'selected' : ''}>${d} 秒</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group"><label>口播风格</label>
-              <select ${isRunning ? 'disabled' : ''} onchange="__aiDissectStyle=this.value">
-                ${['自动', '新闻', '幽默', '干货', '犀利', '煽情'].map(s => `<option${__aiDissectStyle === s ? ' selected' : ''}>${s}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          <div class="form-group"><label>补充要求（可选）</label>
-            <input type="text" value="${escapeHtml(__aiDissectNote || '')}" placeholder="结合品牌改写、篇幅重点、画面风格等，如「植入XX品牌，走高端路线」「篇幅侧重实操步骤」「画面偏暖色调」；留空则全权交给 AI" ${isRunning ? 'disabled' : ''} oninput="__aiDissectNote=this.value">
-          </div>
-          <div class="llm-actions" id="aiDissectActions">
-            ${__aiDissectCompressing
-              ? '<button class="btn-cancel" onclick="cancelDissectCompress()">取消压缩</button>'
-              : isRunning
-                ? '<button class="btn-cancel" onclick="cancelDissectAnalysis()">取消拆解</button>'
-                : (() => {
-                    const buttons = [];
-                    buttons.push('<button class="btn-save" onclick="runAiVideoDissect()">AI 拆解二创</button>');
-                    if (__aiDissectFile && !__aiDissectCompressed) {
-                      const tooBig = __aiDissectFile.size > AI_DISSECT_MAX_BYTES;
-                      buttons.push(`<button class="btn-outline" onclick="runDissectCompressStage()">${tooBig ? '压缩视频（建议）' : '压缩视频（可选）'}</button>`);
-                    }
-                    if (__aiDissectCompressed) {
-                      buttons.push('<button class="btn-outline" onclick="runDissectCompressStage()">重新压缩</button>');
-                    }
-                    if (__aiDissectFile) {
-                      buttons.push('<button class="btn-cancel" onclick="clearAiDissectFile()">取消</button>');
-                    }
-                    return buttons.join('');
-                  })()
-            }
-          </div>
-          ${!__aiDissectCompressed && __aiDissectFile && __aiDissectFile.size > AI_DISSECT_MAX_BYTES
-            ? '<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(255,180,0,0.08);border:1px solid rgba(255,180,0,0.2);font-size:12px;color:var(--text2);">⚠️ 视频 ' + formatBytes(__aiDissectFile.size) + ' 超过推荐上限（' + formatBytes(AI_DISSECT_MAX_BYTES) + '），部分模型可能调用失败，建议先压缩</div>'
-            : ''}
-          <div class="llm-chat-quota">今日 AI 视频拆解专家剩余 ${llmQuotaRemaining('dissect')} 次</div>
-        </div>
-      </div>
-      <div class="ai-panel">
-        <div class="ai-panel-head"><span class="ai-panel-dot"></span><span class="ai-panel-title">AI 输出结果</span>${__aiDissectResult ? aiDissectHeadButtons() : ''}</div>
-        <div class="ai-result-panel">${
-          __aiDissectCompressing
-            ? '<div class="llm-loading"><span id="aiDissectCompressText">' + escapeHtml(__aiDissectCompressText || '正在压缩视频...（与视频时长同步，请稍候）') + '</span><span class="llm-loading-hint">压缩完成后可直接点击「AI 拆解二创」</span></div>'
-            : isRunning
-            ? '<div class="llm-loading"><span>正在拆解并生成二创方案...</span><span class="llm-loading-hint">预计需要 1-3 分钟，可随时取消。</span></div>'
-            : __aiDissectError
-              ? '<div class="llm-error">拆解失败：' + escapeHtml(__aiDissectError) + '<br><span style="font-size:11px;color:var(--text3);">可调整参数后重试；若反复失败请检查模型是否支持视频输入</span></div>'
-              : __aiDissectResult
-              ? '<pre class="llm-reply">' + escapeHtml(__aiDissectResult) + '</pre>'
-              : (!configured ? '<div class="llm-error">尚未配置大模型，请先在上方填写并保存。</div>' : '<div class="ai-panel-empty">原视频拆解 + 去重二创口播稿 + 分镜建议将显示在这里</div>')
-        }</div>
-      </div>
-    </div>`;
-}
-function aiDissectHeadButtons() {
-  return '<div style="margin-left:auto;display:flex;gap:6px;">' +
-    '<button class="btn-data-entry" onclick="copyAiVideoDissectResult()" style="font-size:11px;padding:4px 10px;cursor:pointer;">一键复制</button>' +
-    '<button class="btn-danger" onclick="clearAiVideoDissectResult()" style="font-size:11px;padding:4px 10px;cursor:pointer;">清空</button>' +
-    '</div>';
-}
-
-// 选择视频：读取时长元数据
-function handleAiDissectFile(file) {
-  if (!file) return;
-  if (!/^video\//.test(file.type) && !/\.(mp4|mov|webm|avi|mkv|m4v)$/i.test(file.name)) {
-    showToast('请选择视频文件（mp4/mov/webm 等）');
-    return;
-  }
-  const runId = ++__aiDissectRunId;
-  __aiDissectFile = file;
-  __aiDissectResult = null;
-  __aiDissectError = '';
-  __aiDissectLoading = false;
-  __aiDissectCompressing = false;
-  __aiDissectCompressed = null;   // 新文件需重新压缩
-  __aiDissectCompressText = '';
-  __aiDissectMeta = { size: file.size, duration: 0, compressed: false, note: '' };
-  // 读时长
-  const url = URL.createObjectURL(file);
-  const vid = document.createElement('video');
-  vid.preload = 'metadata';
-  vid.onloadedmetadata = () => {
-    if (runId !== __aiDissectRunId) return;
-    __aiDissectMeta.duration = vid.duration || 0;
-    URL.revokeObjectURL(url);
-    render();
-    showToast('视频已选择');
-  };
-  vid.onerror = () => {
-    if (runId !== __aiDissectRunId) return;
-    URL.revokeObjectURL(url);
-    __aiDissectMeta.duration = 0;
-    render();
-    showToast('读取视频信息失败，但可在分析时尝试');
-  };
-  vid.src = url;
-}
-
-// ===== 视频压缩：先检测本机 ffmpeg（快、零下载）→ 未安装才加载 ffmpeg.wasm（无浏览器实时压缩）=====
-// 本机 ffmpeg：上传二进制给 /api/ffmpeg/compress，服务端用系统 ffmpeg 快速压缩
-async function compressVideoWithSystemFfmpeg(file, durationSec, onProgress, signal) {
-  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-  const res = await fetch('/api/ffmpeg/compress?duration=' + encodeURIComponent(durationSec || '') + '&size=' + file.size, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
-    body: file,
-    signal
-  });
-  if (!res.ok) {
-    let detail = '';
-    try { const j = await res.json(); detail = j && j.error ? '：' + j.error : ''; } catch (e) {}
-    const err = new Error('HTTP ' + res.status + detail);
-    err.localFfmpegUnavailable = res.status === 503;
-    throw err;
-  }
-  const buf = await res.arrayBuffer();
-  if (onProgress) onProgress(1);
-  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-  return new Blob([buf], { type: 'video/mp4' });
-}
-
-// 检测本机是否已装 ffmpeg（供压缩前分流：本地 → wasm）
-function checkSystemFfmpeg() {
-  return fetch('/api/ffmpeg/check').then(r => r.json()).then(j => !!(j && j.available)).catch(() => false);
-}
-
-// ===== ffmpeg.wasm 压缩（本机未装 ffmpeg 时回退；CDN 按需加载，仅首次需下载）=====
-let __ffmpegLoading = null;   // 加载中 promise 缓存（防并发重复加载）
-const FFMPEG_BASE = 'https://cdn.jsdelivr.net/npm';
-function loadFfmpeg() {
-  if (window.__ffmpegInstance) return Promise.resolve(window.__ffmpegInstance);
-  if (__ffmpegLoading) return __ffmpegLoading;
-  __ffmpegLoading = (async () => {
-    const loadScript = src => new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = src;
-      s.onload = resolve;
-      s.onerror = () => reject(new Error('压缩引擎脚本加载失败'));
-      document.head.appendChild(s);
-    });
-    if (!window.FFmpegWASM) await loadScript(FFMPEG_BASE + '/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
-    if (!window.FFmpegUtil) await loadScript(FFMPEG_BASE + '/@ffmpeg/util@0.12.1/dist/umd/index.js');
-    const { FFmpeg } = window.FFmpegWASM;
-    const { toBlobURL } = window.FFmpegUtil;
-    const coreBase = FFMPEG_BASE + '/@ffmpeg/core@0.12.6/dist/umd';
-    const ffmpeg = new FFmpeg();
-    await ffmpeg.load({
-      classWorkerURL: await toBlobURL(FFMPEG_BASE + '/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
-      coreURL: await toBlobURL(coreBase + '/ffmpeg-core.js', 'text/javascript'),
-      wasmURL: await toBlobURL(coreBase + '/ffmpeg-core.wasm', 'application/wasm')
-    });
-    window.__ffmpegInstance = ffmpeg;
-    return ffmpeg;
-  })();
-  // 加载失败时清缓存，允许下次重试（否则永远拿失败的 promise）
-  __ffmpegLoading.catch(() => { __ffmpegLoading = null; });
-  return __ffmpegLoading;
-}
-
-// ffmpeg 压缩：按时长算码率（目标 10MB 内）+ 限宽 540/960 + 15fps + ultrafast 快速编码
-async function compressVideoWithFfmpeg(file, durationSec, onProgress, signal) {
-  if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-  const ffmpeg = await loadFfmpeg();
-  const onAbort = () => {
-    try { ffmpeg.terminate(); } catch (e) {}   // 硬终止：exec promise 立即 reject
-    window.__ffmpegInstance = null;            // terminate 后实例不可复用，下次重建
-    __ffmpegLoading = null;                    // 同步清加载缓存（否则永远拿到已 terminate 的实例）
-  };
-  signal.addEventListener('abort', onAbort);
-  try {
-    const ext = (file.name.split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const inName = 'in.' + (ext || 'mp4');
-    const outName = 'out.mp4';
-    await ffmpeg.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
-    if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-    // 码率：预算 10MB 反推（与服务端同口径）
-    const audioBit = 64000;
-    const videoBit = Math.max(200000, Math.min(1500000, AI_DISSECT_TARGET_BYTES * 8 / Math.max(durationSec, 10) - audioBit));
-    const maxW = durationSec > 180 ? 540 : 960;
-    const vf = "scale='min(" + maxW + ",iw)':-2";
-    const progressHandler = ({ progress }) => {
-      if (onProgress && progress > 0 && progress <= 1) onProgress(progress);
-    };
-    ffmpeg.on('progress', progressHandler);
-    let execErr = null;
-    try {
-      await ffmpeg.exec([
-        '-i', inName,
-        '-vf', vf, '-r', '15',
-        '-c:v', 'libx264', '-preset', 'ultrafast',
-        '-b:v', String(Math.round(videoBit)), '-maxrate', String(Math.round(videoBit * 1.45)), '-bufsize', String(Math.round(videoBit * 2.9)),
-        '-c:a', 'aac', '-b:a', '64k',
-        '-movflags', '+faststart', '-y', outName
-      ]);
-    } catch (e) { execErr = e; }
-    ffmpeg.off('progress', progressHandler);
-    try { await ffmpeg.deleteFile(inName); } catch (e) {}
-    if ((signal && signal.aborted) || execErr) {
-      try { await ffmpeg.deleteFile(outName); } catch (e) {}
-      if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-      throw execErr || new Error('压缩执行失败');
-    }
-    const data = await ffmpeg.readFile(outName);
-    try { await ffmpeg.deleteFile(outName); } catch (e) {}
-    if (signal && signal.aborted) throw new DOMException('已取消', 'AbortError');
-    return new Blob([data.buffer], { type: 'video/mp4' });
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result).split(',')[1]);
-    fr.onerror = reject;
-    fr.readAsDataURL(blob);
-  });
-}
-
-// 系统提示词：固定输出结构 + 按表单选项分位置注入（时长→口播稿规则 / 风格→创作要求）；品牌植入等自定义需求随补充要求走用户消息
-function buildVideoDissectPrompt(durationSec, style) {
-  const styleText = {
-    '自动': '口播风格根据原视频调性自动匹配最合适的一种',
-    '新闻': '口播风格为新闻播报腔：客观正式、字正腔圆、信息感强',
-    '幽默': '口播风格为幽默搞笑：轻松玩梗、有网感、节奏明快',
-    '干货': '口播风格为专业干货：条理清晰、信息密度高、像行业老手分享经验',
-    '犀利': '口播风格为犀利点评：观点鲜明、言辞直接、一针见血',
-    '煽情': '口播风格为煽情共鸣：情感渲染、故事化叙述、引发共情'
-  }[style] || '口播风格根据原视频调性自动匹配最合适的一种';
-  return '你是一名资深的短视频二创导演兼内容拆解专家，擅长拆解爆款视频的构成并产出可落地的去重二创方案。\n' +
-    '请分析用户提供的视频（可识别画面、镜头、字幕、口播内容），输出以下三部分内容（纯文本，不要使用任何 markdown 符号如 #、**、*）：\n' +
-    '【原视频拆解】\n' +
-    '时长：视频总时长\n' +
-    '主题：用一两句话概括核心主题，并简要介绍内容亮点。\n' +
-    '【二创口播稿+字幕】\n' +
-    '总时长为 ' + durationSec + ' 秒，以 5-10 秒为一段切分为多段，逐段输出该段落的配音字幕（每段字幕时长与段长匹配）。' + styleText + '。去重原则：保留原视频核心信息点，但换表达不换内核——叙述视角、语言风格、信息组织顺序均需调整，避免与原视频文案雷同；开头段落要有钩子，结尾段落要有引导互动。\n' +
-    '若用户补充要求中提出了品牌改写、篇幅侧重、画面风格等需求，需在口播稿和画面建议中逐一落实（如品牌植入方式、段落详略分配、视觉风格统一等），不要遗漏。\n' +
-    '【二创画面建议】\n' +
-    '与口播稿分段一一对应，以 5-10 秒为一段切分（共几段以口播稿总时长为准，不固定段数），逐段给出：画面建议（场景/人物动作/运镜/素材类型）、口播字幕、转场或音效提示。表述要具体可直接照着拍或剪。\n' +
-    '只输出上述三个部分，不要输出其他解释或无关内容。';
-}
-
-// 主流程：拆解（优先用已压缩的缓存，否则直接用原文件；大小限制由用户自行判断）
-async function runAiVideoDissect() {
-  if (__aiDissectLoading || __aiDissectCompressing) return;
-  const cfg = llmConfig || {};
-  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) { showToast('请先在 AI大模型配置栏 配置 模型接口'); return; }
-  if (!__aiDissectFile) { showToast('请先选择视频文件'); return; }
-  if (!__llmQuotaLoaded) await loadLlmQuota();
-  if (llmQuotaRemaining('dissect') <= 0) { showToast('今日 AI 视频拆解专家额度已用尽，明天再来'); return; }
-
-  const runId = ++__aiDissectRunId;
-
-  // 大小警告（不阻断，仅提示）
-  if (!__aiDissectCompressed && __aiDissectFile.size > AI_DISSECT_MAX_BYTES) {
-    showToast('视频 ' + formatBytes(__aiDissectFile.size) + ' 超过推荐上限，可能导致调用失败，建议先压缩');
-  }
-
-  // ===== 阶段二：拆解（用压缩缓存或原文件）=====
-  __aiDissectLoading = true;
-  __aiDissectResult = null;
-  __aiDissectError = '';
-  const ctrl = new AbortController();
-  __aiDissectAbortCtrl = ctrl;
-  render();
-  await llmQuotaConsume('dissect');
-
-  try {
-    const blob = __aiDissectCompressed || __aiDissectFile;
-    const b64 = await blobToBase64(blob);
-    let type = (blob.type && blob.type !== '' && blob.type !== 'application/octet-stream') ? blob.type : 'video/mp4';
-    type = String(type).split(';')[0].trim() || 'video/mp4';
-    const sendReq = () => chatRaw(cfg.baseUrl, cfg.apiKey, cfg.model, [
-      { role: 'system', content: buildVideoDissectPrompt(__aiDissectDuration, __aiDissectStyle) },
-      { role: 'user', content: [
-        { type: 'text', text: '请拆解分析这个视频，并按你的输出规范给出去重二创方案。' + (__aiDissectNote && __aiDissectNote.trim() ? '以下补充要求请务必落实：' + __aiDissectNote.trim() : '') },
-        { type: 'video_url', video_url: { url: 'data:' + type + ';base64,' + b64 } }
-      ]}
-    ], cfg.temperature, ctrl.signal);
-    let reply;
-    try {
-      reply = await sendReq();
-    } catch (e) {
-      if (ctrl.signal.aborted) throw new DOMException('已取消', 'AbortError');
-      if (runId !== __aiDissectRunId) throw e;
-      if (!/timed?\s*out|timeout/i.test(String(e && e.message))) throw e;
-      showToast('服务端处理超时，自动重试一次...');
-      reply = await sendReq();
-    }
-    if (runId !== __aiDissectRunId) return;
-    __aiDissectResult = reply;
-    __aiDissectLoading = false;
-    render();
-    showToast('分析完成');
-  } catch (e) {
-    if (runId !== __aiDissectRunId) return;
-    __aiDissectLoading = false;
-    __aiDissectAbortCtrl = null;
-    if (e.name !== 'AbortError') {
-      __aiDissectError = e.message;
-      render();
-      showToast('拆解失败');
-      await llmQuotaRefund('dissect');
-    } else {
-      render();
-    }
-  }
-}
-
-// 压缩阶段（手动触发）：根据勾选决定是否自动开始拆解；支持取消
-// 策略：先检测本机 ffmpeg（快、零下载）→ 未安装才加载 ffmpeg.wasm（无浏览器实时压缩）
-async function runDissectCompressStage() {
-  const runId = ++__aiDissectRunId;
-  __aiDissectCompressing = true;
-  __aiDissectCompressText = '视频 ' + formatBytes(__aiDissectFile.size) + '，正在压缩...';
-  render();
-  const ctrl = new AbortController();
-  __aiDissectCompressCtrl = ctrl;
-  const setProg = t => {
-    __aiDissectCompressText = t;
-    const el = document.getElementById('aiDissectCompressText');
-    if (el) el.textContent = t;   // 进度直接更新 DOM，不触发重绘
-  };
-  const durationSec = (__aiDissectMeta && __aiDissectMeta.duration) || 0;
-  try {
-    let out;
-    const localAvailable = await checkSystemFfmpeg();
-    if (ctrl.signal.aborted) throw new DOMException('已取消', 'AbortError');
-    if (localAvailable) {
-      setProg('正在调用本机 ffmpeg 压缩（加速，零下载）...');
-      out = await compressVideoWithSystemFfmpeg(__aiDissectFile, durationSec, p => {
-        setProg('正在压缩视频... ' + Math.round(p * 100) + '%（本机 ffmpeg 加速）');
-      }, ctrl.signal);
-    } else {
-      setProg('本机未检测到 ffmpeg，正在加载压缩引擎（首次需下载约 30MB，仅此一次）...');
-      out = await compressVideoWithFfmpeg(__aiDissectFile, durationSec, p => {
-        setProg('正在压缩视频... ' + Math.round(p * 100) + '%（ffmpeg 加速）');
-      }, ctrl.signal);
-    }
-    if (runId !== __aiDissectRunId) return;
-    __aiDissectCompressed = out;
-    __aiDissectMeta.compressed = true;
-    __aiDissectCompressing = false;
-    __aiDissectCompressText = '';
-    render();
-    showToast('压缩完成（' + formatBytes(out.size) + '），可直接点击「AI 拆解二创」');
-  } catch (e) {
-    if (runId !== __aiDissectRunId) return;
-    __aiDissectCompressing = false;
-    __aiDissectCompressText = '';
-    render();
-    if (e.name === 'AbortError') showToast('已取消压缩');
-    else showToast('压缩失败：' + e.message);
-  }
-  __aiDissectCompressCtrl = null;
-}
-
-function clearAiDissectFile() {
-  if (__aiDissectCompressing) { cancelDissectCompress(); return; }
-  if (__aiDissectLoading) { cancelDissectAnalysis(); return; }
-  const runId = ++__aiDissectRunId;
-  __aiDissectFile = null;
-  __aiDissectMeta = null;
-  __aiDissectCompressed = null;
-  __aiDissectCompressText = '';
-  __aiDissectResult = null;
-  __aiDissectError = '';
-  __aiDissectLoading = false;
-  const input = document.getElementById('aiDissectFile');
-  if (input) input.value = '';
-  render();
-  showToast('已取消选择');
-}
-
-function clearAiVideoDissectResult() {
-  if (!__aiDissectResult && !__aiDissectError) { showToast('暂无可清空内容'); return; }
-  showConfirm({
-    title: '清空 AI 拆解结果',
-    desc: '将清空当前的 AI 视频拆解结果，是否继续？',
-    danger: true,
-    okText: '确认清空',
-    onOk: () => {
-      __aiDissectResult = null;
-      __aiDissectError = '';
-      render();
-      showToast('AI 拆解结果已清空');
-    }
-  });
-}
-
-function copyAiVideoDissectResult() {
-  if (!__aiDissectResult) { showToast('暂无结果可复制'); return; }
-  copyAiCopyText(__aiDissectResult);
 }
 
