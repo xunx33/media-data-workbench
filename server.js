@@ -33,6 +33,11 @@ const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1')
 // MCB_DEFAULT_USER：首次启用时，data/ 根下已有的旧数据自动迁移到该用户名下（默认 admin）。
 const MULTIUSER = process.env.MCB_MULTIUSER === '1';
 const DEFAULT_USER = (process.env.MCB_DEFAULT_USER || 'admin').replace(/[^a-zA-Z0-9_-]/g, '') || 'admin';
+// 共享 AI 配置（llmConfig）的管理员名单：多用户模式下只有名单内用户可修改/清空
+// （Key 全员共用，若任何人可改 baseUrl，等于可以把全员共享的 Key 引到自己控制的服务器）
+const ADMIN_USERS = (process.env.MCB_ADMIN_USERS || DEFAULT_USER)
+  .split(',').map(s => s.trim().replace(/[^a-zA-Z0-9_-]/g, '')).filter(Boolean);
+function isAdminUser(user) { return ADMIN_USERS.includes(user); }
 const DATA_DIR = path.resolve(process.env.MCB_DATA_DIR || path.join(__dirname, 'data'));
 const USERS_DIR = path.join(DATA_DIR, 'users');
 // 各写接口请求体上限
@@ -354,6 +359,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.startsWith('/api/data/') && url !== '/api/data/batch') {
       const key = url.replace('/api/data/', '').replace(/[^a-zA-Z0-9_]/g, '');
       if (!key) { res.writeHead(400); res.end('Invalid key'); return; }
+      // 多用户模式：共享 AI 配置仅管理员可改（Key 全员共用，防止被指向外部服务器或误清空）
+      if (key === 'llmConfig' && MULTIUSER && !isAdminUser(currentUser)) {
+        auditLog(currentUser, 'deny', 'llmConfig 非管理员');
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('403 仅管理员可修改 AI 配置');
+        return;
+      }
       if (!isJsonContentType(req)) {
         res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('415 Unsupported Media Type');
@@ -400,6 +412,13 @@ const server = http.createServer(async (req, res) => {
       for (const item of updates) {
         if (!item || !item.key || !/^[a-zA-Z0-9_]+$/.test(item.key)) {
           res.writeHead(400); res.end('Invalid key'); return;
+        }
+        // 多用户模式：共享 AI 配置仅管理员可改
+        if (item.key === 'llmConfig' && MULTIUSER && !isAdminUser(currentUser)) {
+          auditLog(currentUser, 'deny', 'llmConfig batch 非管理员');
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('403 仅管理员可修改 AI 配置');
+          return;
         }
         if (item.key === 'llmConfig') {
           item.val = JSON.parse(prepareLlmConfigWrite(JSON.stringify(item.val === undefined ? {} : item.val)));

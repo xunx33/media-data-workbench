@@ -112,6 +112,8 @@ node server.js
 2. nginx 开启 `auth_basic`，用 htpasswd 给每个同事建独立账号，并把登录名传给后端（`proxy_set_header X-Remote-User $remote_user;`）
 3. 数据按登录用户分目录存放（`data/users/<账号>/`），同事之间数据完全隔离；AI 大模型 Key 全局共享一份（配置一次全员可用，且不会下发到任何浏览器）
 
+管理员与权限：默认只有 `MCB_DEFAULT_USER`（默认 admin）可修改共享 AI 配置；如需多个管理员，设 `MCB_ADMIN_USERS=账号1,账号2`。普通用户读取 AI 配置只能看到脱敏结果，无 Key。
+
 审计：nginx access.log 记录每次访问的账号；`data/activity.log` 记录谁在什么时间写了什么数据、谁调用了 AI。
 
 ---

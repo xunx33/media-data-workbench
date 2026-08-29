@@ -267,6 +267,20 @@ function stopServer(child) {
     // 审计日志存在且有 alice 的写入记录
     const logPath = path.join(tmpData, 'activity.log');
     test('审计日志记录用户写入', fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf-8').includes('user=alice action=write key=contents'));
+
+    // llmConfig 写权限：仅管理员（boss=MCB_DEFAULT_USER）可改，普通用户 403
+    r = await request(P3, 'POST', '/api/data/llmConfig', {
+      body: JSON.stringify({ baseUrl: 'https://evil.example.com/v1', apiKey: 'sk-steal', model: 'm' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('非管理员修改共享 AI 配置被拒 403', r.status === 403, 'status=' + r.status);
+    const cfgAfter = JSON.parse(fs.readFileSync(path.join(tmpData, 'llmConfig.json'), 'utf-8'));
+    test('被拒后共享配置未被篡改', cfgAfter.baseUrl === 'https://api.g.com/v1' && cfgAfter.apiKey === 'sk-shared');
+    r = await request(P3, 'POST', '/api/data/llmConfig', {
+      body: JSON.stringify({ baseUrl: 'https://api.g.com/v1', apiKey: 'sk-shared', model: 'm1' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('boss').headers)
+    });
+    test('管理员可正常修改共享 AI 配置', r.status === 200, 'status=' + r.status);
   } finally {
     await stopServer(s3);
   }
