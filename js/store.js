@@ -40,12 +40,35 @@ function countCorruptRecords(list, fields) {
   return n;
 }
 
+// ===== 视频指标平台适用性（口径基准：导出报表/表格解析/AI 分析/总览汇总统一引用）=====
+// （完播率：抖音/快手/视频号；均播时长(秒)：抖音/小红书/视频号；收藏：抖音/快手/小红书；推荐：视频号）
+const VIDEO_METRIC_APPLY = {
+  '抖音':   { completionRate: true,  avgWatch: true,  favorites: true,  recommend: false },
+  '快手':   { completionRate: true,  avgWatch: false, favorites: true,  recommend: false },
+  '小红书': { completionRate: false, avgWatch: true,  favorites: true,  recommend: false },
+  '视频号': { completionRate: true,  avgWatch: true,  favorites: false, recommend: true },
+};
+// 汇总用：平台不适用该指标的记录不计入总和（如视频号的收藏），与展示「-」的口径一致
+function sumVideoMetric(statsArr, key) {
+  return (statsArr || []).reduce((sum, s) => {
+    const apply = VIDEO_METRIC_APPLY[s.platform];
+    return sum + (apply && apply[key] === false ? 0 : (Number(s[key]) || 0));
+  }, 0);
+}
+
 // ===== 唯一 ID 生成 =====
 // 字符串拼接而非数值加法：Date.now() 量级下浮点小数仅约 4096 个离散值，
 // 同一毫秒批量生成（如表格批量导入）会碰撞，导致编辑/删除命中错误记录
 let __idSeq = 0;
 function genId() {
   return Date.now().toString(36) + '-' + (++__idSeq).toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+// ===== 月份切换防溢出 =====
+// 直接 setMonth 在 29~31 日会跳月（如 8月31日 setMonth(+1) → 10月1日），先固定到 1 日再偏移
+function shiftMonth(dateObj, delta) {
+  const d = new Date(dateObj.getFullYear(), dateObj.getMonth() + delta, 1);
+  dateObj.setTime(d.getTime());
 }
 
 // ===== CONFIG =====
@@ -303,13 +326,11 @@ function switchWorkspace(w) {
   workspace = 'video';
   localStorage.setItem(STORAGE_KEY + 'workspace', workspace);
   currentTab = 'today';
-  dataSubTab = 'video';
   if (reviewPlatformFilter && !VIDEO_PLATFORMS.includes(reviewPlatformFilter)) reviewPlatformFilter = '';
   render();
 }
 let currentMonth = new Date();
 let selectedDate = null;
-let dataSubTab = 'video';
 let reviewPlatformFilter = '';   // 数据复盘平台筛选：''=全部 | 具体平台名
 let editId = null;
 let overviewMonth = new Date();

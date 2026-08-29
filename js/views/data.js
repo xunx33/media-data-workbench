@@ -10,8 +10,6 @@ function findLinkedTitle(record, type) {
 }
 
 function renderData() {
-  // 数据复盘固定为短视频数据
-  dataSubTab = 'video';
   let html = '';
 
   // 顶部工具栏：左侧平台筛选标签 + 右侧周期下拉（同一行，窄屏自动换行）
@@ -72,15 +70,15 @@ function renderAccountTab() {
 function getPeriodRanges(period) {
   const today = new Date();
   if (period === 'week') {
-    // 本周：周一~周日；上周：前一周一~周日
+    // 本周：周一~今天（与内容登记筛选、每周复盘提醒统一口径；未来日期本就无数据）
+    // 上周：上周一~上周日（与「本月 vs 上月整月」的双柱对比口径一致）
     const dow = (today.getDay() + 6) % 7;
     const monday = new Date(today); monday.setDate(today.getDate() - dow);
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
     const prevMonday = new Date(monday); prevMonday.setDate(monday.getDate() - 7);
     const prevSunday = new Date(prevMonday); prevSunday.setDate(prevMonday.getDate() + 6);
     return {
       label: '本周', prevLabel: '上周',
-      start: getDayStr(monday), end: getDayStr(sunday),
+      start: getDayStr(monday), end: getDayStr(today),
       prevStart: getDayStr(prevMonday), prevEnd: getDayStr(prevSunday)
     };
   }
@@ -171,18 +169,31 @@ async function saveReview() {
   // 只保存最新的「本周 / 本月」复盘：
   // 1) 同周期(period) + 同类型(type) 直接覆盖 —— 每次保存即覆盖旧日期的旧数据
   // 2) 丢弃不在当前周 / 当前月的旧复盘，确保只留存最新本周、本月
+  // 有旧记录会被覆盖/丢弃时先弹确认（删除不可恢复，与其他删除操作交互一致）
   const weekRange = getPeriodRanges('week');
   const monthRange = getPeriodRanges('month');
   const inWeek = d => d >= weekRange.start && d <= weekRange.end;
   const inMonth = d => d >= monthRange.start && d <= monthRange.end;
-  reviews = reviews.filter(r => {
-    if (r.period === period && r.type === type) return false;          // 覆盖同类旧记录
-    if (r.period === 'week' && !inWeek(r.date || '')) return false;    // 旧周复盘丢弃
-    if (r.period === 'month' && !inMonth(r.date || '')) return false;  // 旧月复盘丢弃
-    return true;
-  });
-  reviews.push({ id: Date.now(), type, period, date, highlights, problems, plans });
-  await saveData('reviews', reviews); render(); showToast('复盘已保存');
+  const dropped = reviews.filter(r =>
+    (r.period === period && r.type === type) ||
+    (r.period === 'week' && !inWeek(r.date || '')) ||
+    (r.period === 'month' && !inMonth(r.date || ''))
+  );
+  const doSave = async () => {
+    reviews = reviews.filter(r => !dropped.includes(r));
+    reviews.push({ id: Date.now(), type, period, date, highlights, problems, plans });
+    await saveData('reviews', reviews); render(); showToast('复盘已保存');
+  };
+  if (dropped.length > 0) {
+    showConfirm({
+      title: '保存并清理旧复盘',
+      desc: `保存会覆盖/清理 ${dropped.length} 条旧周期复盘（仅保留最新本周、本月各一条），删除不可恢复。是否继续？`,
+      okText: '确认保存',
+      onOk: doSave
+    });
+  } else {
+    await doSave();
+  }
 }
 
 function deleteReview(id) {
@@ -367,14 +378,14 @@ function renderVideoData(period) {
   const totalViews = currStats.reduce((sum, s) => sum + (s.views || 0), 0);
   const totalLikes = currStats.reduce((sum, s) => sum + (s.likes || 0), 0);
   const totalComments = currStats.reduce((sum, s) => sum + (s.comments || 0), 0);
-  const totalFavorites = currStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const totalFavorites = sumVideoMetric(currStats, 'favorites');
   const totalFollowers = currStats.reduce((sum, s) => sum + (s.followers || 0), 0);
   // 上一周期对比值（环比基数）
   const prevCount = contents.filter(c => byPf(c) && c.createdAt >= ranges.prevStart && c.createdAt <= ranges.prevEnd).length;
   const prevViews = prevStats.reduce((sum, s) => sum + (s.views || 0), 0);
   const prevLikes = prevStats.reduce((sum, s) => sum + (s.likes || 0), 0);
   const prevComments = prevStats.reduce((sum, s) => sum + (s.comments || 0), 0);
-  const prevFavorites = prevStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const prevFavorites = sumVideoMetric(prevStats, 'favorites');
   const prevFollowers = prevStats.reduce((sum, s) => sum + (s.followers || 0), 0);
   const titleSuffix = pf ? ' · ' + pf : '';
 

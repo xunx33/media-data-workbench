@@ -130,7 +130,7 @@ function renderDayPlatformItem(platform, count, date, type) {
   return html;
 }
 
-function changeMonth(delta) { currentMonth.setMonth(currentMonth.getMonth() + delta); render(); }
+function changeMonth(delta) { shiftMonth(currentMonth, delta); render(); }
 function goToday() { currentMonth = new Date(); selectedDate = getToday(); render(); }
 function selectDay(date) { selectedDate = date; render(); }
 

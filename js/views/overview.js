@@ -19,7 +19,7 @@ function renderOverview() {
   const monthViews = monthVideoStats.reduce((sum, s) => sum + (s.views || 0), 0);
   const monthLikes = monthVideoStats.reduce((sum, s) => sum + (s.likes || 0), 0);
   const monthComments = monthVideoStats.reduce((sum, s) => sum + (s.comments || 0), 0);
-  const monthFavorites = monthVideoStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const monthFavorites = sumVideoMetric(monthVideoStats, 'favorites');
   const monthFollowers = monthVideoStats.reduce((sum, s) => sum + (s.followers || 0), 0);
 
   // 上月数据（用于环比计算）
@@ -32,7 +32,7 @@ function renderOverview() {
   const prevViews = prevVideoStats.reduce((sum, s) => sum + (s.views || 0), 0);
   const prevLikes = prevVideoStats.reduce((sum, s) => sum + (s.likes || 0), 0);
   const prevComments = prevVideoStats.reduce((sum, s) => sum + (s.comments || 0), 0);
-  const prevFavorites = prevVideoStats.reduce((sum, s) => sum + (s.favorites || 0), 0);
+  const prevFavorites = sumVideoMetric(prevVideoStats, 'favorites');
   const prevFollowers = prevVideoStats.reduce((sum, s) => sum + (s.followers || 0), 0);
 
   html += `<div class="card"><div class="card-title">本月数据总览</div>`;
@@ -54,7 +54,7 @@ function renderOverview() {
     { label: '涨粉量', sum: monthFollowers, key: 'followers' },
   ];
   html += '<div class="card"><div class="card-title">各平台数据占比 <span class="badge">本月</span></div>';
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">';
+  html += '<div class="pie-grid">';
   metrics.forEach(m => {
     const segs = VIDEO_PLATFORMS.map((p, i) => {
       const v = monthVideoStats.filter(s => s.platform === p).reduce((sum, s) => sum + (s[m.key] || 0), 0);
@@ -194,5 +194,5 @@ function pieHighlight(uid, idx, on) {
   });
 }
 
-function changeOverviewMonth(delta) { overviewMonth.setMonth(overviewMonth.getMonth() + delta); render(); }
+function changeOverviewMonth(delta) { shiftMonth(overviewMonth, delta); render(); }
 function goOverviewThisMonth() { overviewMonth = new Date(); render(); }

@@ -259,10 +259,6 @@ async function testLLMConnection() {
 // 两个功能各自独立的取消控制器（互不干扰：一个功能完成/取消时不会影响另一个的 loading 显示）
 let __aiReviewController = null;  // AI 数据分析专家
 let __aiCopyController = null;    // AI 视频文案专家
-function resetAiBusyFlags() {
-  // 切换 tab 不打断 AI：busy 标志与请求均保留
-  // 渲染函数根据 busy 标志显示 loading + 取消按钮，切回后状态不丢失
-}
 
 // ===== AI 数据分析专家（AI 配置与功能页，视频平台）=====
 // 按所选周期（全部/本月/本周）取数据（与导出报表同口径的数据表），连同账号运营时长注入系统提示词，让大模型自动分析与复盘
@@ -330,11 +326,7 @@ function buildAiReviewSystemPrompt(periodLabel, monthsText, withAccountData) {
   return p;
 }
 
-// 分析对象：仅视频平台
-let __aiReviewTarget = 'video';
-function setAiReviewTarget(v) {
-  if (v === 'video') __aiReviewTarget = v;
-}
+// 分析对象固定为视频平台（历史上有全文书记录，现已下线）
 
 // AI 配置与功能页的 AI 数据分析专家卡片（分析对象 + 周期下拉 + 运营时长输入）
 function renderAiReviewCard() {
@@ -415,7 +407,7 @@ function buildOverviewReviewData(range) {
     });
   }
   const vStats = stats.filter(s => inReviewRange(s.date || '', range) && isVideo(s.platform));
-  const sum = k => vStats.reduce((s, x) => s + (x[k] || 0), 0);
+  const sum = k => sumVideoMetric(vStats, k);
   push('【短视频平台数据汇总】');
   push('总发布数：' + monthContents.filter(c => isVideo(c.platform)).length +
     '，总播放量：' + sum('views') + '，总点赞：' + sum('likes') + '，总评论：' + sum('comments') +
@@ -542,7 +534,7 @@ function cancelAiReview() {
   __overviewAiBusy = false;
   // 未拿到结果前取消 → 退还本次额度（已完成后取消则不退，避免重复退款）
   if (!__aiReviewCompleted) llmQuotaRefund('review');
-  __aiReviewReplies[__aiReviewTarget] = '';
+  __aiReviewReplies['video'] = '';
   const out = document.getElementById('overviewAiOutput');
   if (out) out.innerHTML = '<div class="llm-error" style="color:var(--text3);">已取消运行</div>';
   // 恢复开始按钮
@@ -647,7 +639,7 @@ async function generateAiVideoCopy() {
   if (!topic) { showToast('请输入选题/主题'); return; }
   
   const cfg = llmConfig || {};
-  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) { showToast('请先在 AI大模型配置栏 配置 模型接口'); return; }
+  if (!cfg.baseUrl || !(cfg.apiKey || cfg.hasKey) || !cfg.model) { showToast('请先在 AI大模型配置栏 配置 模型接口'); return; }
   if (!__llmQuotaLoaded) await loadLlmQuota();
   if (llmQuotaRemaining('chat') <= 0) { showToast('今日 AI 视频文案专家额度已用尽，明天再来'); return; }
   
@@ -663,17 +655,23 @@ async function generateAiVideoCopy() {
 
   try {
     const systemPrompt = buildVideoCopyPrompt(platform, topic, selling, remark);
-    const reply = await chatRaw(cfg.baseUrl, cfg.apiKey, cfg.model, [
+    const reply = await chatRaw(cfg.baseUrl, cfg.apiKey || '', cfg.model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: `请为${platform}平台生成关于「${topic}」的视频标题、描述、标签文案` }
     ], cfg.temperature, __aiCopyController.signal);
-    
+
     __aiCopyResult = parseVideoCopyResult(reply);
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      showToast('生成失败：' + e.message);
+    // AI 返回格式异常（未解析出任何文案）→ 提示并退还额度，右侧不留白板
+    if (!__aiCopyResult.titles.length && !__aiCopyResult.description) {
+      __aiCopyResult = null;
+      showToast('AI 返回格式异常，未解析出文案，额度已退还');
       await llmQuotaRefund('chat');
     }
+  } catch (e) {
+    // 取消/失败都退还：未拿到结果不消耗额度（与 AI 数据分析专家口径一致）
+    __aiCopyResult = null;
+    showToast(e.name === 'AbortError' ? '已取消生成（额度已退还）' : '生成失败：' + e.message);
+    await llmQuotaRefund('chat');
   }
   
   __aiCopyLoading = false;

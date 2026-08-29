@@ -21,14 +21,8 @@ function cellNum(v) {
 }
 
 // 各视频平台「适用」的指标：不适用的指标在报表中留白，而非显示 0；有数据时（含 0）照实输出
-// （完播率：抖音/快手/视频号；均播时长(秒)：抖音/小红书/视频号；收藏：抖音/快手/小红书；推荐：视频号）
-const VIDEO_METRIC_APPLY = {
-  '抖音':   { completionRate: true,  avgWatch: true,  favorites: true,  recommend: false },
-  '快手':   { completionRate: true,  avgWatch: false, favorites: true,  recommend: false },
-  '小红书': { completionRate: false, avgWatch: true,  favorites: true,  recommend: false },
-  '视频号': { completionRate: true,  avgWatch: true,  favorites: false, recommend: true },
-};
 // 视频指标：平台不适用该项时显示「-」（例如快手不记均播、小红书不记完播率）；适用时 cellNum 输出——0 显示 0、无值留空
+// 口径基准 VIDEO_METRIC_APPLY 定义在 store.js（总览汇总/AI 分析/表格解析统一引用）
 function videoMetric(s, key) {
   const apply = VIDEO_METRIC_APPLY[s.platform];
   if (apply && apply[key] === false) return '-';

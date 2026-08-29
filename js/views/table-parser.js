@@ -201,7 +201,10 @@ async function doImport(rows, platform) {
   if (wrap) wrap.style.display = 'none';
   const preview = document.getElementById('parserPreview');
   if (preview) {
-    preview.innerHTML = '✅ 已导入完成，可继续上传其他文件';
+    // 解析失败（如只有表头没有数据行）时不能提示成功
+    preview.innerHTML = (result && result.parsedCount > 0)
+      ? '✅ 已导入完成，可继续上传其他文件'
+      : '❌ 未导入任何数据，请检查文件内容后重试';
   }
 }
 
@@ -342,9 +345,13 @@ function decodeXml(s) {
 
 function parseSheetXml(xml, sharedStrings) {
   const rows = [];
-  const rowRegex = /<row[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+  // 行号 r 属性是可选的（部分工具导出的 sheet 会省略），缺失时按出现顺序递增补位；
+  // 单元格定位依赖各自 r="A1" 属性，行号本身不参与列定位
+  const rowRegex = /<row(?:[^>]*?\br="(\d+)")?[^>]*>([\s\S]*?)<\/row>/g;
+  let expectedRow = 1;
   let rm;
   while ((rm = rowRegex.exec(xml)) !== null) {
+    expectedRow = rm[1] ? parseInt(rm[1], 10) + 1 : expectedRow + 1;
     const cells = [];
     // 单元格匹配：自闭合空单元格（<c r="A10"/>）优先，否则普通带值单元格
     // 原正则要求 </c> 结尾，会把自闭合空单元格与其后单元格一起吞掉 → 整行左移（空标题行因此丢失）
@@ -729,8 +736,9 @@ function parseCompletion(v) {
   }
   const num = parseFloat(s);
   if (isNaN(num)) return null;
-  // 0-1 之间视为小数（0.356 → 35.6%），否则视为百分比
-  if (num > 0 && num <= 1) return Math.round(num * 1000) / 10;
+  // 0-1 之间「且带小数」才视为小数占比（0.356 → 35.6%）；整数 1 按用户直觉记 1%，
+  // 避免「完播率 1」被解析成 100%
+  if (num > 0 && num < 1 && s.includes('.')) return Math.round(num * 1000) / 10;
   return Math.round(num * 10) / 10;
 }
 
@@ -742,13 +750,6 @@ function parseAvgWatch(v) {
   const num = parseFloat(s.replace(/[^0-9.]/g, ''));
   if (isNaN(num)) return null;
   return Math.round(num * 10) / 10;
-}
-
-function isYesValue(v) {
-  if (v === undefined || v === null) return false;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return false;
-  return ['是', '1', 'true', 'y', 'yes', '√', '✓', '✔', '有', '已'].includes(s);
 }
 
 function getFilteredContents() {
@@ -836,17 +837,10 @@ function fmtData(v) {
   return formatNum(v);
 }
 
-// 平台适用性（与导出报表 VIDEO_METRIC_APPLY 保持一致）：
-// 完播率：抖音/快手/视频号；均播：抖音/小红书/视频号；收藏：抖音/快手/小红书；推荐：仅视频号
-const VIDEO_METRIC_APPLY_VIEW = {
-  '抖音':   { completionRate: true,  avgWatch: true,  favorites: true,  recommend: false },
-  '快手':   { completionRate: true,  avgWatch: false, favorites: true,  recommend: false },
-  '小红书': { completionRate: false, avgWatch: true,  favorites: true,  recommend: false },
-  '视频号': { completionRate: true,  avgWatch: true,  favorites: false, recommend: true },
-};
 // 平台不适用 → '-';适用时原样（未录入留空 / 0 / 数值）
+// 口径基准 VIDEO_METRIC_APPLY 定义在 store.js（与导出报表/总览汇总/AI 分析统一）
 function metricView(pf, key, v) {
-  const apply = VIDEO_METRIC_APPLY_VIEW[pf];
+  const apply = VIDEO_METRIC_APPLY[pf];
   if (apply && apply[key] === false) return '-';
   return v;
 }
