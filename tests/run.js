@@ -131,7 +131,11 @@ const HARNESS = `
   try { searchKeyword = __PAYLOAD__; } catch(e){}
   try { contentFilterType=''; contentDateFilter=''; contentSortByViews=''; } catch(e){}
   try { dataSubTab='video'; } catch(e){}
-  const __calls__ = ['renderContentDetail','renderContentItem','renderVideoDataModal','renderContent','renderReviewPanel'];
+  // AI 页数据：恶意 Base URL / 模型名 / AI 返回文案都会进 innerHTML
+  try { llmConfig = { baseUrl:__PAYLOAD__, apiKey:'k', model:__PAYLOAD__, savedAt:'2026-08-12T00:00:00Z' }; } catch(e){}
+  try { __aiCopyResult = { titles:[__PAYLOAD__], description:__PAYLOAD__, tags:__PAYLOAD__ }; } catch(e){}
+  try { __aiCopyLoading = false; } catch(e){}
+  const __calls__ = ['renderContentDetail','renderContentItem','renderVideoDataModal','renderContent','renderReviewPanel','renderLLMConfig','renderAiVideoCopyCard'];
   let __html__ = '';
   let __ran__ = [];
   __calls__.forEach(function(fn){
@@ -155,7 +159,7 @@ const HARNESS = `
 const RENDER_LOAD_FILES = [
   'store.js', 'ui.js', 'export.js',
   'views/today.js', 'views/table-parser.js', 'views/content.js',
-  'views/data.js', 'views/calendar.js', 'views/overview.js',
+  'views/data.js', 'views/calendar.js', 'views/overview.js', 'views/llm.js',
 ];
 
 function runCombinedRender() {
