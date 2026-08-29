@@ -97,6 +97,7 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.md': 'text/markdown; charset=utf-8',
   '.webmanifest': 'application/manifest+json'
 };
@@ -681,6 +682,13 @@ const server = http.createServer(async (req, res) => {
     const query = req.url.split('?')[1] || '';
     if ((ext === '.js' || ext === '.css') && query.indexOf('v=') === 0) {
       res.writeHead(200, { 'Content-Type': MIME[ext], 'Cache-Control': 'public, max-age=31536000, immutable' });
+      res.end(fs.readFileSync(filePath));
+      return;
+    }
+
+    // 图标等不常变的静态图：长缓存（HTTP 部署下无 Service Worker 兜底，必须靠响应头让浏览器存住）
+    if (url.startsWith('/icons/')) {
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=2592000' });
       res.end(fs.readFileSync(filePath));
       return;
     }
