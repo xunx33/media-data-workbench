@@ -186,6 +186,23 @@ a { color: var(--accent); text-decoration: none; }
   border-color: var(--accent);
 }
 
+/* 深色模式切换按钮：与导航标签同排，方形小按钮 */
+.theme-toggle {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  width: 30px; height: 28px;
+  padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 15px;
+  cursor: pointer;
+  transition: color 0.25s var(--ease), background 0.25s var(--ease), border-color 0.25s var(--ease);
+}
+.theme-toggle:hover { background: var(--card2); border-color: var(--accent); }
+.theme-toggle:active { transform: scale(0.94); }
+
 .backup-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1431,3 +1448,108 @@ a { color: var(--accent); text-decoration: none; }
   transition: all 0.2s var(--ease);
 }
 .search-box .search-btn:hover { background: #2196F3; }
+
+/* ===== 深色模式（深夜蓝）：html[data-theme="dark"] 覆盖变量 + 少量硬编码颜色修正 =====
+   主题由 index.html 内联脚本在 CSS 前设定（localStorage 优先 / 首次跟随系统），切换见 ui.js toggleTheme() */
+html[data-theme="dark"] {
+  --bg: #0e1a28;                          /* 主背景：深夜蓝 */
+  --bg-2: #122437;                        /* 次要背景 */
+  --card: #152739;                        /* 卡片 */
+  --card-solid: #1a3048;                  /* 实色卡片 */
+  --card2: #1d3a56;                       /* 次要卡片（嵌套面板） */
+  --card2-solid: #224262;                 /* 次要实色卡片 */
+  --border: rgba(142, 197, 252, 0.10);
+  --border-strong: rgba(142, 197, 252, 0.24);
+  --text: #e8f1fa;
+  --text2: #b9cfe4;
+  --text3: #7e9ab5;
+  --accent: #4aa3ea;                      /* 暗底上提亮主操作蓝 */
+  --accent-ink: #071422;                  /* 亮蓝底上用深色文字保证对比度 */
+  --accent-2: #64b5f6;
+  --accent-soft: rgba(74, 163, 234, 0.14);
+  --accent-grad: #4aa3ea;
+  --link-blue: #6ab7f2;
+  --green: #4cc36a;
+  --red: #ef7b5a;
+  --yellow: #d4a944;
+  --orange: #e8823f;
+  --purple: #b07cd6;
+  --video-orange: #e8823f;
+  --video-orange-light: #f09a5e;
+  --teal: #35c4a8;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --glow-accent: 0 0 0 1px rgba(74, 163, 234, 0.0);
+}
+
+/* 页面背景：夜色渐变替代晴空渐变 */
+html[data-theme="dark"] body {
+  background-image:
+    radial-gradient(1200px 600px at 85% -10%, rgba(74, 163, 234, 0.10), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, rgba(21, 101, 192, 0.14), transparent 55%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+}
+/* 纹理在暗底上稍微压淡 */
+html[data-theme="dark"] body::before { opacity: 0.02; }
+
+/* 顶栏：毛玻璃改夜色半透明 */
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  html[data-theme="dark"] .topbar { background: rgba(14, 26, 40, 0.72); }
+  html[data-theme="dark"] .topbar:hover { background: rgba(21, 39, 57, 0.88); }
+}
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .backup-bar { border-color: rgba(142, 197, 252, 0.18); }
+html[data-theme="dark"] .topbar:hover,
+html[data-theme="dark"] .backup-bar:hover { border-color: rgba(142, 197, 252, 0.30); }
+
+/* 表格行悬停 / 链路提示 / 高亮：低透明蓝在暗底不可见，统一换成亮蓝底色 */
+html[data-theme="dark"] .data-table tr:hover { background: rgba(74, 163, 234, 0.10); }
+html[data-theme="dark"] .chain-hint:hover { background: rgba(74, 163, 234, 0.25); }
+html[data-theme="dark"] .search-highlight { background: rgba(74, 163, 234, 0.35); }
+
+/* 今日框 / 日历今日描边：蓝 tint 换亮蓝 */
+html[data-theme="dark"] .today-section { border-color: rgba(74, 163, 234, 0.30); }
+html[data-theme="dark"] .calendar-day.today { border-color: rgba(74, 163, 234, 0.55); }
+html[data-theme="dark"] .content-item.video { border-color: rgba(232, 130, 63, 0.40); }
+
+/* AI 结果面板：纯白渐变在暗底刺眼，改为暗色渐变 */
+html[data-theme="dark"] .ai-result-panel {
+  background: linear-gradient(180deg, var(--card-solid), var(--card));
+  scrollbar-color: rgba(142, 197, 252, 0.35) transparent;
+}
+html[data-theme="dark"] .ai-result-panel::-webkit-scrollbar-thumb { background: rgba(142, 197, 252, 0.35); }
+
+/* 下拉框箭头：SVG 内联描边色需随主题更换 */
+html[data-theme="dark"] .form-group select {
+  border-color: rgba(142, 197, 252, 0.40);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.30);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='7' viewBox='0 0 12 7'><path fill='none' stroke='%237eb8e8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M1 1l5 5 5-5'/></svg>");
+}
+html[data-theme="dark"] .period-select-row select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%237eb8e8' d='M0 0l5 6 5-6z'/></svg>");
+}
+
+/* 暗底上硬编码 #fff 的按钮文字改随 accent-ink（亮蓝底 + 深色字） */
+html[data-theme="dark"] .page-btn.active,
+html[data-theme="dark"] .ai-links-edit:hover { color: var(--accent-ink); }
+
+/* 环比/状态色：暗底上提亮 */
+html[data-theme="dark"] .stat-change.up { color: #35c46f; }
+html[data-theme="dark"] .stat-change.down { color: #f06a5a; }
+
+/* 行内小按钮（编辑/链路）蓝色 tint 换亮蓝底 */
+html[data-theme="dark"] .btn-edit-mini { background: rgba(74, 163, 234, 0.14); border-color: rgba(74, 163, 234, 0.45); }
+html[data-theme="dark"] .btn-edit-mini:hover { background: rgba(74, 163, 234, 0.26); }
+
+/* 日历假日标签保持红底白字可读性 */
+html[data-theme="dark"] .calendar-day.holiday { color: #f87171; }
+
+/* 主操作 hover：浅色主题的 #2196F3 比暗色主色还深，暗色下换成更亮的蓝
+   （确认弹窗的危险按钮同时带 btn-save/btn-danger 两个类，必须排除，hover 保持红色系） */
+html[data-theme="dark"] .btn-done:hover,
+html[data-theme="dark"] .btn-today:hover,
+html[data-theme="dark"] .btn-edit:hover,
+html[data-theme="dark"] .btn-save:hover:not(.btn-danger),
+html[data-theme="dark"] .toolbar .btn-primary:hover,
+html[data-theme="dark"] .search-box .search-btn:hover,
+html[data-theme="dark"] .fab:hover { background: #6cb8f2; }

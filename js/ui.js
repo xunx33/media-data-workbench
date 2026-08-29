@@ -279,3 +279,36 @@ function trendTipHide() {
     document.querySelectorAll('.trend-dot.hot').forEach(function(d) { d.classList.remove('hot'); });
   }, 100);
 }
+
+// ===== 全局深色模式 =====
+// 实际主题在 index.html <head> 内联脚本中已提前设置（防首屏闪烁）；这里只负责切换、持久化与按钮图标同步
+const THEME_KEY = 'wb_content_workbench_v2_theme';
+const THEME_META_COLOR = { light: '#1a6fb5', dark: '#0e1a28' };
+
+function applyThemeButton() {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const dark = document.documentElement.dataset.theme === 'dark';
+  btn.textContent = dark ? '☀️' : '🌙';
+  btn.title = dark ? '切换到浅色模式' : '切换到深色模式';
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 隐私模式下存不上就用当前会话主题 */ }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = THEME_META_COLOR[next];
+  applyThemeButton();
+  showToast(next === 'dark' ? '已切换到深色模式' : '已切换到浅色模式');
+}
+
+// 启动时同步按钮图标与 PWA 状态栏颜色（内联脚本只设了 html 属性，未动 DOM 按钮）
+(function initThemeUI() {
+  // 无 documentElement 的环境（如测试沙箱）直接跳过
+  if (!document.documentElement) return;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const t = document.documentElement.dataset.theme;
+  if (meta && THEME_META_COLOR[t]) meta.content = THEME_META_COLOR[t];
+  applyThemeButton();
+})();
