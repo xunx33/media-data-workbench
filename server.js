@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3000;
 //   服务端保持 127.0.0.1 绑定，外部无法绕过 nginx 直连（身份头不可伪造）
 const HOST = process.env.MCB_LAN === '1' ? undefined : '127.0.0.1';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
-const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1')
+const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1,106.53.116.12')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 // 多用户模式：MCB_MULTIUSER=1 时按 nginx 注入的 X-Remote-User 头识别登录者，
 // 数据存 data/users/<用户名>/*.json 相互隔离；llmConfig（共享 AI Key）与审计日志为全局。
