@@ -115,16 +115,21 @@ function showDataNotLoadedBanner() {
 // 保存失败提示：写入被后端拒绝（非 2xx / 网络错误）时显示持久横幅，直到后续保存成功才消失。
 // 不打断正常流程，但用户能明确看到「改动可能未落盘」，避免静默吞错导致内存与磁盘状态漂移。
 let __saveFailedShown = false;
-function showSaveFailedBanner() {
-  if (__saveFailedShown) return;
+function showSaveFailedBanner(reason) {
   __saveFailedShown = true;
   if (typeof document === 'undefined' || !document.getElementById) return;
-  if (document.getElementById('save-failed-banner')) return;
-  const div = document.createElement('div');
-  div.id = 'save-failed-banner';
-  div.innerHTML = '⚠️ 数据保存失败（后台写入异常），当前改动可能未落盘，请检查后台服务与磁盘空间';
-  div.style.cssText = 'position:fixed;top:38px;left:0;right:0;background:#d97706;color:#fff;text-align:center;padding:8px;z-index:99998;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
-  document.body.appendChild(div);
+  let div = document.getElementById('save-failed-banner');
+  if (!div) {
+    div = document.createElement('div');
+    div.id = 'save-failed-banner';
+    div.style.cssText = 'position:fixed;top:38px;left:0;right:0;background:#d97706;color:#fff;text-align:center;padding:8px;z-index:99998;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
+    document.body.appendChild(div);
+  }
+  // 有服务器返回的具体原因（如权限拦截）则原样展示，避免误导去查磁盘
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  div.innerHTML = reason
+    ? '⚠️ 保存被拒绝：' + esc(reason)
+    : '⚠️ 数据保存失败（后台写入异常），当前改动可能未落盘，请检查后台服务与磁盘空间';
 }
 function clearSaveFailedBanner() {
   if (!__saveFailedShown) return;
@@ -152,13 +157,13 @@ async function saveData(key, val) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(val)
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) throw new Error(await serverRejectReason(res));
     clearSaveFailedBanner();
   })();
   _inflightSaves[key] = p;
   try { await p; } catch (e) {
     console.warn('[saveData] ' + key + ' 失败:', e);
-    showSaveFailedBanner();
+    showSaveFailedBanner(e.message.startsWith('HTTP ') ? '' : e.message);
   }
   delete _inflightSaves[key];
 }
@@ -184,17 +189,28 @@ async function saveDataBatch(updates) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) throw new Error(await serverRejectReason(res));
     clearSaveFailedBanner();
   })();
   // 标记所有 key 为进行中
   updates.forEach(({ key }) => { _inflightSaves[key] = p; });
   try { await p; } catch (e) {
     console.warn('[saveDataBatch] 失败:', e);
-    showSaveFailedBanner();
+    showSaveFailedBanner(e.message.startsWith('HTTP ') ? '' : e.message);
   }
   // 清除标记
   updates.forEach(({ key }) => { delete _inflightSaves[key]; });
+}
+
+// 从服务端拒绝响应中提取人类可读原因（权限拦截等），供保存失败横幅展示
+async function serverRejectReason(res) {
+  try {
+    const t = await res.text();
+    const jm = t.trim().startsWith('{') ? ((JSON.parse(t).error || {}).message) : null;
+    const msg = jm || t.replace(/^\d{3}\s*/, '').trim();
+    if (msg) return msg.slice(0, 60) + '（HTTP ' + res.status + '）';
+  } catch (e) {}
+  return 'HTTP ' + res.status;
 }
 
 // ===== STATE（异步初始化） =====
