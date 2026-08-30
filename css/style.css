@@ -1145,6 +1145,14 @@ a { color: var(--accent); text-decoration: none; }
   .form-row { grid-template-columns: 1fr; }
   .nav-tab { padding: 7px 10px; font-size: 12px; }
   .ws-ai-btn { padding: 7px 10px; font-size: 12px; }
+  /* 移动端导航：换行平铺替代横向滚动，所有标签始终可见（不再被卷出屏幕外） */
+  .nav-tabs {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    overflow-x: visible;
+    row-gap: 6px;
+    width: 100%;
+  }
   .bar-chart { height: 100px; }
   .calendar-day { height: 46px; }
 }
