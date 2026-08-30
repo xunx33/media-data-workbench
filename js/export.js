@@ -239,7 +239,17 @@ function buildAccountSheet(ds) {
 function toggleExportMenu(e) {
   if (e) e.stopPropagation();
   const m = document.getElementById('exportMenu');
-  if (m) m.classList.toggle('open');
+  if (!m) return;
+  if (m.classList.contains('open')) { m.classList.remove('open'); return; }
+  m.classList.add('open');
+  // fixed 定位：锚定触发按钮正下方（移动端滑动容器 overflow 裁剪不影响弹出层），靠右缘时自动内收
+  const trigger = m.parentElement.querySelector('.export-trigger') || (e && e.target);
+  if (trigger && trigger.getBoundingClientRect) {
+    const r = trigger.getBoundingClientRect();
+    const width = m.offsetWidth || 130;
+    m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) + 'px';
+    m.style.top = (r.bottom + 6) + 'px';
+  }
 }
 function doExport(scope) {
   const m = document.getElementById('exportMenu');

@@ -265,11 +265,13 @@ a { color: var(--accent); text-decoration: none; }
 .export-trigger { display: inline-flex; align-items: center; gap: 2px; }
 .export-menu {
   min-width: 130px;
-  display: none; position: absolute; top: 100%; left: 0; right: 0;
+  /* fixed 定位：打开时由 JS 锚定触发按钮下方。不用 absolute 是因为移动端
+     .backup-group 为横向滑动容器（overflow-x:auto），absolute 子菜单会被裁剪 */
+  display: none; position: fixed;
   margin-top: 6px; padding: 4px 0;
   background: var(--card-solid); border: 1px solid var(--border-strong);
   border-radius: 0; box-shadow: var(--shadow);
-  z-index: 60; overflow: hidden;
+  z-index: 130; overflow: hidden;
 }
 .export-menu.open { display: block; animation: overlayIn 0.18s var(--ease); }
 .export-item {
