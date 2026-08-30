@@ -31,7 +31,9 @@ const ALLOWED_HOSTS = (process.env.MCB_ALLOWED_HOSTS || 'localhost,127.0.0.1,106
 // 多用户模式：MCB_MULTIUSER=1 时按 nginx 注入的 X-Remote-User 头识别登录者，
 // 数据存 data/users/<用户名>/*.json 相互隔离；llmConfig（共享 AI Key）与审计日志为全局。
 // MCB_DEFAULT_USER：首次启用时，data/ 根下已有的旧数据自动迁移到该用户名下（默认 admin）。
-const MULTIUSER = process.env.MCB_MULTIUSER === '1';
+// 多用户模式：默认开启（服务器多人使用，数据按 data/users/<账号>/ 隔离，应用内登录页认证）；
+// 本地单机调试想回到单用户（免登录）模式：设环境变量 MCB_MULTIUSER=0
+const MULTIUSER = process.env.MCB_MULTIUSER !== '0';
 const DEFAULT_USER = (process.env.MCB_DEFAULT_USER || 'admin').replace(/[^a-zA-Z0-9_-]/g, '') || 'admin';
 // 共享 AI 配置（llmConfig）的管理员名单：多用户模式下只有名单内用户可修改/清空
 // （Key 全员共用，若任何人可改 baseUrl，等于可以把全员共享的 Key 引到自己控制的服务器）

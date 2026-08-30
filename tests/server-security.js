@@ -76,7 +76,7 @@ function stopServer(child) {
   // ===== 实例 1：无令牌模式 =====
   let s1;
   try {
-    s1 = await startServer(PORT1, {});
+    s1 = await startServer(PORT1, { MCB_MULTIUSER: '0' });
   } catch (e) {
     console.log('  \u2717 无令牌实例启动失败：' + e.message);
     process.exit(1);
@@ -170,7 +170,7 @@ function stopServer(child) {
   console.log('\n[server-security] ACCESS_TOKEN 认证');
   let s2;
   try {
-    s2 = await startServer(PORT2, { ACCESS_TOKEN: TOKEN });
+    s2 = await startServer(PORT2, { ACCESS_TOKEN: TOKEN, MCB_MULTIUSER: '0' });
   } catch (e) {
     console.log('  \u2717 令牌实例启动失败：' + e.message);
     process.exit(1);

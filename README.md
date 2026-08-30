@@ -101,15 +101,15 @@ node server.js
 
 ### 部署到服务器（多人使用，数据按用户隔离）
 
-需要给团队多人使用时，推荐 **nginx（登录认证）+ Node（数据服务）** 架构，完整示例见 `deploy/nginx.conf.example`：
+需要给团队多人使用时，推荐 **nginx（反向代理）+ Node（数据服务）** 架构，完整示例见 `deploy/nginx.conf.example`：
 
 1. 服务器上启动（Node 只监听本机，外部无法绕过 nginx）：
    ```bat
-   set MCB_MULTIUSER=1
    set MCB_ALLOWED_HOSTS=你的域名或IP
    node server.js
    ```
-2. nginx 开启 `auth_basic`，用 htpasswd 给每个同事建独立账号，并把登录名传给后端（`proxy_set_header X-Remote-User $remote_user;`）
+   多用户模式**默认开启**（首次启动自动创建 admin 账号并打印初始密码；本地单机调试可用 `MCB_MULTIUSER=0` 关闭）
+2. 登录走应用内登录页（`/__login`，账号文件 `data/mcb_users`），登录后可自助修改密码；老式 nginx `auth_basic` + `X-Remote-User` 注入方式仍兼容
 3. 数据按登录用户分目录存放（`data/users/<账号>/`），同事之间数据完全隔离；AI 大模型 Key 全局共享一份（配置一次全员可用，且不会下发到任何浏览器）
 
 管理员与权限：默认只有 `MCB_DEFAULT_USER`（默认 admin）可修改共享 AI 配置；如需多个管理员，设 `MCB_ADMIN_USERS=账号1,账号2`。普通用户读取 AI 配置只能看到脱敏结果，无 Key。
@@ -224,7 +224,7 @@ node server.js
 - **静态服务穿越防护**：拒绝 `..` 片段与反斜杠/编码变体（`%5C`、`%2e%2e`），`path.resolve` 归一化后二次断言仍在项目内；`data/` 目录禁止直接访问，数据只走 API
 - **接口校验**：Host 白名单（`MCB_ALLOWED_HOSTS`，防 DNS rebinding）；写接口强制 `Content-Type: application/json`（免疫表单 CSRF）+ 请求体大小上限（数据 10MB / LLM 2MB）
 - **访问令牌（可选）**：设置 `ACCESS_TOKEN` 环境变量后全站需登录（内置登录页，Cookie HttpOnly + SameSite=Strict）
-- **多用户身份**：`MCB_MULTIUSER=1` 时信任 nginx 注入的 `X-Remote-User`，按用户隔离数据并写入审计日志
+- **多用户身份**：默认开启多用户模式（应用内登录页 + 会话 Cookie，兼容 nginx 注入 `X-Remote-User` 的老式接法），按用户隔离数据并写入审计日志；`MCB_MULTIUSER=0` 可关闭
 - **XSS 防御**：所有用户输入统一经 `escapeHtml()` 转义（含引号）；链接经 `safeUrl()` 仅放行 http/https；AI 返回文本不进入内联事件；自动化回归测试以恶意输入跑真实渲染函数验证
 - **数据保护**：核心数据加载失败时禁止写入（防止空数据覆盖磁盘真实数据）；导入备份自动清洗 id 字段并存导入前快照
 - **API Key 安全**：Key 只存服务端 `data/llmConfig.json`，读取接口脱敏（只有 `hasKey` 标记），页面从不渲染真实 Key，编辑留空=保持原 Key
