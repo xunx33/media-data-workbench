@@ -36,9 +36,13 @@
       <h1>新媒体数据工作台</h1>
       <div class="subtitle">Media Studio · 4短视频平台</div>
     </div>
-    <span class="current-user" id="currentUser" style="display:none;"></span>
-    <span class="current-user chg-pwd" id="chgPwdBtn" style="display:none;cursor:pointer;" onclick="openChangePwd()" title="修改登录密码">🔑 修改密码</span>
-    <span class="current-user chg-pwd" id="logoutBtn" style="display:none;cursor:pointer;" onclick="location.href='/__logout'" title="退出登录">⏻ 退出</span>
+    <div class="user-box" id="userBox" style="display:none;">
+      <span class="current-user" id="currentUser"></span>
+      <span class="user-actions">
+        <span class="current-user chg-pwd" id="chgPwdBtn" style="cursor:pointer;" onclick="openChangePwd()" title="修改登录密码">🔑 修改密码</span>
+        <span class="current-user chg-pwd" id="logoutBtn" style="cursor:pointer;" onclick="location.href='/__logout'" title="退出登录">🚪 退出</span>
+      </span>
+    </div>
   </div>
   <div class="nav-tabs" id="navTabs">
     <div class="nav-tab active" data-tab="today">今日待办</div>

@@ -76,13 +76,10 @@ function checkWeeklyReminder() {
   }
   // 当前登录用户（多用户模式由 nginx 注入 X-Remote-User 或应用内登录，单用户模式返回空则不显示）
   fetch('/api/me').then(r => r.json()).then(m => {
+    const box = document.getElementById('userBox');
+    if (box) box.style.display = (m && m.user) ? 'flex' : 'none';
     const el = document.getElementById('currentUser');
-    const pwdBtn = document.getElementById('chgPwdBtn');
-    const outBtn = document.getElementById('logoutBtn');
-    if (el && m && m.user) { el.textContent = '👤 ' + m.user; el.style.display = ''; }
-    // 多用户模式才有"修改密码/退出"入口（单用户无账号体系）
-    if (pwdBtn) pwdBtn.style.display = (m && m.user) ? '' : 'none';
-    if (outBtn) outBtn.style.display = (m && m.user) ? '' : 'none';
+    if (el && m && m.user) { el.textContent = '👤 ' + m.user; }
   }).catch(() => {});
   // 启动时同步分区 UI（多用户/工作台逻辑已简化为仅短视频工作台 + AI 页）
   render();

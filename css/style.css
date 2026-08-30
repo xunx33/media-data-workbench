@@ -140,6 +140,16 @@ a { color: var(--accent); text-decoration: none; }
   background: var(--accent-soft); border: 1px solid var(--border-strong);
   border-radius: 12px; white-space: nowrap;
 }
+/* 用户区：用户名在上，修改密码/退出两枚按钮在下 */
+.user-box {
+  flex-shrink: 0; align-self: center;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+}
+.user-box .current-user { align-self: flex-start; }
+.user-actions { display: flex; gap: 6px; }
+.user-actions .current-user { margin-left: 0; }
+.chg-pwd { cursor: pointer; }
+.chg-pwd:hover { filter: brightness(1.2); }
 
 /* Nav Tabs：右对齐、可横向滚动，去掉原来的居中伪元素技巧 */
 .nav-tabs {
