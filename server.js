@@ -176,6 +176,54 @@ function apr1Verify(password, hash) {
   return safeEqual(apr1Hash(password, m[1]), '$apr1$' + m[1] + '$' + m[2]);
 }
 
+// ===== 多用户会话（HMAC 签名 Cookie，30 天免登录；密钥存 data/session_secret，重启不失效）=====
+const SESSION_COOKIE = 'mcb_session';
+const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session_secret');
+let __sessionSecret = null;
+function sessionSecret() {
+  if (__sessionSecret) return __sessionSecret;
+  try { __sessionSecret = fs.readFileSync(SESSION_SECRET_FILE, 'utf-8').trim(); } catch (e) {}
+  if (!/^[0-9a-f]{64,}$/.test(__sessionSecret || '')) {
+    __sessionSecret = crypto.randomBytes(48).toString('hex');
+    try { atomicWrite(SESSION_SECRET_FILE, __sessionSecret); } catch (e) {}
+  }
+  return __sessionSecret;
+}
+function sessionCookieHeader(user) {
+  const exp = Date.now() + 30 * 24 * 3600 * 1000;
+  const sig = crypto.createHmac('sha256', sessionSecret()).update(user + '.' + exp).digest('hex');
+  return SESSION_COOKIE + '=' + user + '.' + exp + '.' + sig + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000';
+}
+function sessionUser(req) {
+  const m = String(parseCookies(req)[SESSION_COOKIE] || '').match(/^([a-zA-Z0-9_-]+)\.(\d+)\.([0-9a-f]{64})$/);
+  if (!m || Number(m[2]) < Date.now()) return '';
+  const sig = crypto.createHmac('sha256', sessionSecret()).update(m[1] + '.' + m[2]).digest('hex');
+  return safeEqual(sig, m[3]) ? m[1] : '';
+}
+// 登录防暴力破解：同 IP 5 分钟内最多错 10 次，超出暂时拒绝
+const __loginFails = new Map();
+function loginThrottled(ip) {
+  const rec = __loginFails.get(ip);
+  if (!rec) return false;
+  if (Date.now() > rec.resetAt) { __loginFails.delete(ip); return false; }
+  return rec.count >= 10;
+}
+function loginRecordFail(ip) {
+  const rec = __loginFails.get(ip);
+  if (!rec || Date.now() > rec.resetAt) __loginFails.set(ip, { count: 1, resetAt: Date.now() + 5 * 60 * 1000 });
+  else rec.count++;
+  if (__loginFails.size > 500) __loginFails.clear();
+}
+// 多用户模式：首次启动且无账号文件时，自动创建管理员账号并随机密码（打印到启动日志）
+function ensureMultiuserAccounts() {
+  if (!MULTIUSER || fs.existsSync(HTPASSWD_FILE)) return;
+  let pwd = crypto.randomBytes(24).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+  if (pwd.length < 8) pwd = crypto.randomBytes(8).toString('hex');
+  atomicWrite(HTPASSWD_FILE, DEFAULT_USER + ':' + apr1Hash(pwd, apr1Salt()) + '\n');
+  console.log(`✓ 已自动创建管理员账号「${DEFAULT_USER}」，初始密码：${pwd}`);
+  console.log('  （请登录后在右上角「修改密码」立即更改）');
+}
+
 // 读请求体，超限直接 413 并返回 null（调用方据此终止）
 function readBody(req, res, limit) {
   return new Promise(resolve => {
@@ -320,27 +368,37 @@ function llmQuotaRefund(user, type) {
   }
 }
 
-// ===== 登录页（仅 ACCESS_TOKEN 模式使用） =====
-const LOGIN_PAGE = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
-  '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>访问验证</title></head>' +
-  '<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;' +
-  'min-height:100vh;margin:0;background:#0e1a28;color:#e8f1fa;">' +
-  '<form method="POST" action="/__login" style="background:#152739;padding:32px;border-radius:14px;' +
-  'box-shadow:0 8px 28px rgba(0,0,0,.45);width:280px;">' +
-  '<h2 style="margin:0 0 8px;font-size:18px;">新媒体数据工作台</h2>' +
-  '<p style="margin:0 0 16px;font-size:12px;color:#7e9ab5;">请输入访问令牌</p>' +
-  '__ERR__' +
-  '<input type="password" name="token" autofocus required placeholder="访问令牌" ' +
-  'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #224262;' +
-  'background:#0e1a28;color:#e8f1fa;font-size:14px;margin-bottom:12px;">' +
-  '<button type="submit" style="width:100%;padding:10px;border:none;border-radius:8px;' +
-  'background:#4aa3ea;color:#071422;font-weight:600;font-size:14px;cursor:pointer;">进入</button>' +
-  '</form></body></html>';
-
-function loginPage(err) {
-  return LOGIN_PAGE.replace('__ERR__', err
-    ? '<p style="margin:0 0 12px;font-size:12px;color:#ef7b5a;">令牌错误，请重试</p>'
-    : '');
+// ===== 登录页（多用户账号模式 / ACCESS_TOKEN 令牌模式共用，深色风格与主应用一致） =====
+const LOGO_IMG = '<img src="/icons/logo.webp" alt="logo" width="44" height="44" style="display:block;margin:0 auto 10px;border-radius:10px;">';
+function loginPage(opts) {
+  const tokenMode = !!opts.tokenMode;
+  const err = opts.err
+    ? '<p style="margin:0 0 12px;font-size:12px;color:#ef7b5a;">' + opts.err + '</p>'
+    : '';
+  const fields = tokenMode
+    ? '<input type="password" name="token" autofocus required placeholder="访问令牌" ' +
+      'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #224262;' +
+      'background:#0e1a28;color:#e8f1fa;font-size:14px;margin-bottom:12px;">'
+    : '<input type="text" name="username" autofocus required placeholder="账号" autocomplete="username" ' +
+      'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #224262;' +
+      'background:#0e1a28;color:#e8f1fa;font-size:14px;margin-bottom:12px;">' +
+      '<input type="password" name="password" required placeholder="密码" autocomplete="current-password" ' +
+      'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #224262;' +
+      'background:#0e1a28;color:#e8f1fa;font-size:14px;margin-bottom:12px;">';
+  const hint = tokenMode ? '请输入访问令牌' : '请输入账号密码（忘记密码联系管理员重置）';
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>登录 · 新媒体数据工作台</title></head>' +
+    '<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;' +
+    'min-height:100vh;margin:0;background:#0e1a28;color:#e8f1fa;">' +
+    '<form method="POST" action="/__login" style="background:#152739;padding:32px;border-radius:14px;' +
+    'box-shadow:0 8px 28px rgba(0,0,0,.45);width:280px;">' +
+    LOGO_IMG +
+    '<h2 style="margin:0 0 8px;font-size:18px;text-align:center;">新媒体数据工作台</h2>' +
+    '<p style="margin:0 0 16px;font-size:12px;color:#7e9ab5;text-align:center;">' + hint + '</p>' +
+    err + fields +
+    '<button type="submit" style="width:100%;padding:10px;border:none;border-radius:8px;' +
+    'background:#4aa3ea;color:#071422;font-weight:600;font-size:14px;cursor:pointer;">登 录</button>' +
+    '</form></body></html>';
 }
 
 const server = http.createServer(async (req, res) => {
@@ -359,12 +417,48 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // 安全：访问令牌（设置 ACCESS_TOKEN 环境变量后启用；/__login 本身豁免）
-    if (ACCESS_TOKEN) {
-      if (url === '/__login') {
-        if (req.method === 'POST') {
-          const body = await readBody(req, res, 4096);
-          if (body === null) return;
+    // ===== 登录 / 登出（多用户账号模式优先；无多用户时退回 ACCESS_TOKEN 令牌模式）=====
+    if (url === '/__logout') {
+      res.writeHead(302, {
+        'Set-Cookie': SESSION_COOKIE + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',
+        'Location': '/__login'
+      });
+      res.end();
+      return;
+    }
+    if (url === '/__login') {
+      if (req.method === 'POST') {
+        const body = await readBody(req, res, 4096);
+        if (body === null) return;
+        const params = new URLSearchParams(String(body));
+        const ip = req.socket.remoteAddress || '?';
+        if (MULTIUSER) {
+          if (loginThrottled(ip)) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+            res.end(loginPage({ err: '尝试次数过多，请 5 分钟后再试' }));
+            return;
+          }
+          const username = String(params.get('username') || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+          const password = String(params.get('password') || '');
+          let hash = null;
+          try {
+            const lines = fs.readFileSync(HTPASSWD_FILE, 'utf-8').split('\n');
+            const line = lines.find(l => l.startsWith(username + ':'));
+            if (line) hash = line.slice(username.length + 1).trim();
+          } catch (e) {}
+          if (username && hash && apr1Verify(password, hash)) {
+            auditLog(username, 'login', '');
+            res.writeHead(302, { 'Set-Cookie': sessionCookieHeader(username), 'Location': '/' });
+            res.end();
+          } else {
+            loginRecordFail(ip);
+            auditLog(username || '-', 'deny', 'login 失败');
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+            res.end(loginPage({ err: '账号或密码不正确' }));
+          }
+          return;
+        }
+        if (ACCESS_TOKEN) {
           const m = String(body).match(/(^|&)token=([^&]*)/);
           const supplied = m ? decodeURIComponent(m[2].replace(/\+/g, ' ')) : '';
           if (supplied && safeEqual(supplied, ACCESS_TOKEN)) {
@@ -375,21 +469,39 @@ const server = http.createServer(async (req, res) => {
             });
             res.end();
           } else {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(loginPage(true));
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+            res.end(loginPage({ tokenMode: true, err: '令牌错误，请重试' }));
           }
           return;
         }
-        // GET /__login：已带正确令牌则直接进首页
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+      }
+      // GET /__login
+      if (MULTIUSER) {
+        if (sessionUser(req)) { res.writeHead(302, { 'Location': '/' }); res.end(); return; }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+        res.end(loginPage({}));
+        return;
+      }
+      if (ACCESS_TOKEN) {
         if (safeEqual(parseCookies(req).mcb_token, ACCESS_TOKEN)) {
           res.writeHead(302, { 'Location': '/' });
           res.end();
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(loginPage(false));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+        res.end(loginPage({ tokenMode: true }));
         return;
       }
+      res.writeHead(302, { 'Location': '/' });
+      res.end();
+      return;
+    }
+
+    // 安全：访问令牌（单用户模式，设置 ACCESS_TOKEN 环境变量后启用）
+    if (ACCESS_TOKEN && !MULTIUSER) {
       // 令牌来源优先级：Cookie → Authorization: Bearer → ?token=
       const q = req.url.split('?')[1] || '';
       const qToken = (q.match(/(^|&)token=([^&]*)/) || [])[2];
@@ -408,18 +520,23 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // ===== 多用户模式：从反代注入的 X-Remote-User 识别登录者 =====
-    // 该头只能来自本机反代（服务绑定 127.0.0.1，外部无法直连伪造），缺头一律拒绝
+    // ===== 多用户模式：识别登录者（优先应用内登录会话，兼容反代注入的 X-Remote-User）=====
+    // 反代与本机同属 127.0.0.1 链路，外部无法直连伪造该头；两者皆缺 → 跳登录页
     let currentUser = '';
     if (MULTIUSER) {
-      const user = String(req.headers['x-remote-user'] || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
-      if (!user) {
-        res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('401 需经 nginx 认证访问（未收到 X-Remote-User 头）');
+      currentUser = sessionUser(req) ||
+        String(req.headers['x-remote-user'] || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!currentUser) {
+        if (url.startsWith('/api/')) {
+          res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: { message: '未登录' } }));
+        } else {
+          res.writeHead(302, { 'Location': '/__login' });
+          res.end();
+        }
         return;
       }
-      currentUser = user;
-      ensureUserDir(user);
+      ensureUserDir(currentUser);
     }
 
     // API：GET /api/me → 当前登录用户（前端顶栏展示）
@@ -823,6 +940,7 @@ server.on('error', (err) => {
 
 // 多用户模式：首次启用时把根目录旧数据迁移到默认用户名下（llmConfig 保持全局共享）
 migrateRootDataToDefaultUser();
+ensureMultiuserAccounts();
 
 server.listen(PORT, HOST, () => {
   const addr = HOST ? `http://localhost:${PORT}` : `http://<电脑IP>:${PORT}（MCB_LAN=1 模式）`;

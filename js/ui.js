@@ -156,7 +156,7 @@ async function submitChangePwd() {
     });
     if (r.ok) {
       closeModal();
-      showToast('密码已修改，浏览器再次要求登录时请使用新密码');
+      showToast('密码已修改，下次登录请使用新密码');
     } else {
       let msg = '修改失败';
       try { const j = await r.json(); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) {}

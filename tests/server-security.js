@@ -351,6 +351,23 @@ function stopServer(child) {
     const aliceLine = after.split('\n').find(l => l.startsWith('alice:')) || '';
     test('正确旧密码修改成功（alice 行更新为新 apr1 哈希）', r.status === 200 && aliceLine.startsWith('alice:$apr1$') && !aliceLine.includes('testsalt'), 'status=' + r.status + ' alice=' + aliceLine.slice(0, 40));
     test('其他用户行不受影响', after.includes('bob:$apr1$testsalt$FIXTURE'), after.replace(/\n/g, ' | ').slice(0, 100));
+    // ===== 应用内登录（/__login → 会话 Cookie）=====
+    fs.writeFileSync(htpasswdPath, fs.readFileSync(htpasswdPath, 'utf-8').replace(/\n*$/, '\n') + 'carol:$apr1$abc12345$T.jpBQeo1RtzI6U9FH5tV/\n'); // apr1('test123', salt=abc12345)
+    r = await request(P3, 'POST', '/__login', {
+      body: 'username=carol&password=badpass1',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    test('登录密码错误 → 页面提示且无会话 Cookie', r.status === 200 && r.body.includes('账号或密码不正确') && !r.setCookie.some(c => c.startsWith('mcb_session=')), 'status=' + r.status);
+    r = await request(P3, 'POST', '/__login', {
+      body: 'username=carol&password=test123',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    const sess = (r.setCookie.find(c => c.startsWith('mcb_session=')) || '').split(';')[0];
+    test('登录成功 302 并下发会话 Cookie', r.status === 302 && sess.startsWith('mcb_session=carol.'), 'status=' + r.status + ' cookie=' + sess.slice(0, 40));
+    r = await request(P3, 'GET', '/api/me', { headers: { 'Cookie': sess } });
+    test('会话 Cookie 识别登录用户', r.status === 200 && JSON.parse(r.body).user === 'carol', r.body.slice(0, 80));
+    r = await request(P3, 'GET', '/api/me', { headers: { 'Cookie': sess.slice(0, -2) + 'ff' } });
+    test('被篡改的会话 Cookie 被拒绝', r.status === 401, 'status=' + r.status + ' ' + r.body.slice(0, 80));
   } finally {
     await stopServer(s3);
   }

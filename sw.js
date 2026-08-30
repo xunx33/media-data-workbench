@@ -5,7 +5,7 @@
 //  - 静态资源（css/js/图标）stale-while-revalidate（先给缓存、后台更新）
 // 版本号：改前端资源记得同步升 CACHE 版本，否则用户一直拿旧壳
 // 流程：每次对 css/js/html 做了用户可见的改动 → 升这个 → 升 index.html 里的 ?v= → app.js 也升级触发 reg.update()
-const CACHE = 'mcb-shell-v19';
+const CACHE = 'mcb-shell-v20';
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -24,6 +24,12 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
+
+  // 登录/登出页与应用内会话相关请求：永远走网络
+  if (url.pathname.startsWith('/__')) {
+    event.respondWith(fetch(req));
+    return;
+  }
 
   // 数据请求：永远走网络，不缓存（避免缓存旧数据导致"装好但数据不对"）
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/data/')) {
