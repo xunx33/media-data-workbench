@@ -76,6 +76,12 @@ function checkWeeklyReminder() {
   }
   // 当前登录用户（多用户模式由 nginx 注入 X-Remote-User 或应用内登录，单用户模式返回空则不显示）
   fetch('/api/me').then(r => r.json()).then(m => {
+    // 管理员标志：多用户模式下仅管理员可编辑 AI 配置（llm.js 据此把配置区置为只读）
+    const isAdmin = !!(m && m.admin);
+    if (window.__mcbAdmin === undefined || window.__mcbAdmin !== isAdmin) {
+      window.__mcbAdmin = isAdmin;
+      if (m && m.user) render();   // 标志与初始渲染时不同 → 按真实身份重绘（AI 配置只读态）
+    }
     const box = document.getElementById('userBox');
     if (box) box.style.display = (m && m.user) ? 'flex' : 'none';
     const el = document.getElementById('currentUser');

@@ -93,10 +93,15 @@ function renderLlmStatusBadge() {
 function renderLLMConfig() {
   const cfg = llmConfig || {};
   const configured = cfg.baseUrl && (cfg.apiKey || cfg.hasKey) && cfg.model;
-  const locked = configured && !__llmEditing;   // 已保存且未在编辑 → 锁定
+  // 多用户非管理员 → 整区只读（输入禁用、无编辑/保存/清空按钮），从源头避免"改了→被服务端拒→丑横幅"
+  const canEdit = window.__mcbAdmin !== false;
+  const locked = (configured && !__llmEditing) || !canEdit;
   const dis = locked ? ' disabled' : '';
   const tempVal = (cfg.temperature === undefined || cfg.temperature === null || cfg.temperature === '') ? '' : cfg.temperature;
-  const actions = locked
+  const actions = !canEdit
+    ? `<button class="btn-test" onclick="testLLMConnection()">测试连接</button>
+       <span style="font-size:12px;color:var(--text3);align-self:center;">🔒 AI 配置仅管理员可修改</span>`
+    : locked
     ? `<button class="btn-save" onclick="startLLMEdit()">编辑配置</button>
        <button class="btn-test" onclick="testLLMConnection()">测试连接</button>
        <button class="btn-danger" onclick="clearLLMConfig()">清空配置</button>`
@@ -141,12 +146,14 @@ function renderLLMConfig() {
 
 // 解锁编辑态（已保存配置 → 可修改）
 function startLLMEdit() {
+  if (window.__mcbAdmin === false) { showToast('仅管理员可修改 AI 配置'); return; }
   __llmEditing = true;
   render();
 }
 
 // ===== 保存配置 =====
 function saveLLMConfig() {
+  if (window.__mcbAdmin === false) { showToast('仅管理员可修改 AI 配置'); return; }
   const baseUrl = document.getElementById('llmBaseUrl').value.trim();
   const apiKey = document.getElementById('llmApiKey').value.trim();
   const model = document.getElementById('llmModel').value.trim();
@@ -170,7 +177,8 @@ function saveLLMConfig() {
   cfg.hasKey = !!(apiKey || (llmConfig && llmConfig.hasKey));
   llmConfig = cfg;
   __llmEditing = false;
-  saveData('llmConfig', llmConfig).then(() => showToast('大模型配置已保存'));
+  // 保存失败（如权限被服务端拒绝）不提示"已保存"，失败横幅给出具体原因
+  saveData('llmConfig', llmConfig).then(ok => { if (ok) showToast('大模型配置已保存'); });
   render();
 }
 

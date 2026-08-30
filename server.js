@@ -539,10 +539,10 @@ const server = http.createServer(async (req, res) => {
       ensureUserDir(currentUser);
     }
 
-    // API：GET /api/me → 当前登录用户（前端顶栏展示）
+    // API：GET /api/me → 当前登录用户与管理员标志（前端据此把 AI 配置区置为只读）
     if (req.method === 'GET' && url === '/api/me') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ user: currentUser }));
+      res.end(JSON.stringify({ user: currentUser, admin: MULTIUSER ? isAdminUser(currentUser) : true }));
       return;
     }
 

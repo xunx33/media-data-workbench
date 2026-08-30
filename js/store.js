@@ -145,7 +145,7 @@ async function saveData(key, val) {
   if (CORE_DATA_KEYS.includes(key) && coreDataLoadFailed()) {
     console.warn('[saveData] ' + key + ' 被拒绝：数据未成功加载，禁止写入');
     showDataNotLoadedBanner();
-    return;
+    return false;
   }
   // 等待同一 key 的上一次保存完成
   if (_inflightSaves[key]) {
@@ -161,11 +161,16 @@ async function saveData(key, val) {
     clearSaveFailedBanner();
   })();
   _inflightSaves[key] = p;
-  try { await p; } catch (e) {
+  try {
+    await p;
+    return true;
+  } catch (e) {
     console.warn('[saveData] ' + key + ' 失败:', e);
     showSaveFailedBanner(e.message.startsWith('HTTP ') ? '' : e.message);
+    return false;
+  } finally {
+    delete _inflightSaves[key];
   }
-  delete _inflightSaves[key];
 }
 
 // 批量保存（跨文件原子：后端先写全部 tmp，再全部 rename，失败自动回滚）
