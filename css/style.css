@@ -1145,13 +1145,19 @@ a { color: var(--accent); text-decoration: none; }
   .form-row { grid-template-columns: 1fr; }
   .nav-tab { padding: 7px 10px; font-size: 12px; }
   .ws-ai-btn { padding: 7px 10px; font-size: 12px; }
-  /* 移动端导航：换行平铺替代横向滚动，所有标签始终可见（不再被卷出屏幕外） */
+  /* 移动端导航：保持单行横向滑动；改为左对齐溢出（flex-end 会把前面的标签挤到不可滑动的区域外），
+     配合 ui.js 点击标签时 scrollIntoView，保证当前标签始终可见 */
   .nav-tabs {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-start;
-    overflow-x: visible;
-    row-gap: 6px;
     width: 100%;
+  }
+  /* 移动端导出工具栏：同样单行横向滑动，压缩纵向占用 */
+  .backup-group {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .bar-chart { height: 100px; }
   .calendar-day { height: 46px; }

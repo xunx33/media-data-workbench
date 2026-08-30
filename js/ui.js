@@ -181,6 +181,8 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     currentTab = tab.dataset.tab;
     // 数据复盘子页固定为视频数据（现仅视频工作台，无子分区切换）
     if (currentTab === 'calendar' && !selectedDate) selectedDate = getToday();
+    // 移动端单行滑动导航：把点中的标签滚进可视区（block:nearest 避免页面跟着竖向滚动）
+    try { tab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } catch (e) {}
     // 切换 tab 时重置 AI busy 标志（避免切回来后按钮点不动）
     render();
   });
