@@ -328,6 +328,29 @@ function stopServer(child) {
       headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
     });
     test('review 用尽不影响 chat 额度（放行后被 SSRF 拦 403）', r.status === 403 && r.body.includes('本机'), 'status=' + r.status + ' ' + r.body.slice(0, 100));
+    // ===== 自助修改密码（/api/changepwd 写 nginx htpasswd）=====
+    // fixture：apr1('oldpass123', salt='testsalt')，与 server.js 内 apr1Hash 算法/openssl 互认
+    const htpasswdPath = path.join(tmpData, 'mcb_users');
+    const fixtureLine = 'alice:$apr1$testsalt$hRjAks1EhVh0xs7iih81u/';
+    fs.writeFileSync(htpasswdPath, fixtureLine + '\nbob:$apr1$testsalt$FIXTURE');
+    r = await request(P3, 'POST', '/api/changepwd', {
+      body: JSON.stringify({ oldPassword: 'wrongpass1', newPassword: 'newpass8888' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('旧密码错误 403 且文件未被改动', r.status === 403 && fs.readFileSync(htpasswdPath, 'utf-8').includes(fixtureLine), 'status=' + r.status + ' ' + r.body.slice(0, 100));
+    r = await request(P3, 'POST', '/api/changepwd', {
+      body: JSON.stringify({ oldPassword: 'oldpass123', newPassword: 'short7' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    test('新密码过短 400', r.status === 400 && r.body.includes('8-64'), 'status=' + r.status + ' ' + r.body.slice(0, 100));
+    r = await request(P3, 'POST', '/api/changepwd', {
+      body: JSON.stringify({ oldPassword: 'oldpass123', newPassword: 'newpass8888' }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, asUser('alice').headers)
+    });
+    const after = fs.readFileSync(htpasswdPath, 'utf-8');
+    const aliceLine = after.split('\n').find(l => l.startsWith('alice:')) || '';
+    test('正确旧密码修改成功（alice 行更新为新 apr1 哈希）', r.status === 200 && aliceLine.startsWith('alice:$apr1$') && !aliceLine.includes('testsalt'), 'status=' + r.status + ' alice=' + aliceLine.slice(0, 40));
+    test('其他用户行不受影响', after.includes('bob:$apr1$testsalt$FIXTURE'), after.replace(/\n/g, ' | ').slice(0, 100));
   } finally {
     await stopServer(s3);
   }

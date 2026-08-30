@@ -127,6 +127,55 @@ function isJsonContentType(req) {
   return ct === 'application/json';
 }
 
+// ===== apr1 密码散列（Apache MD5，与 nginx htpasswd / openssl passwd -apr1 兼容）=====
+const HTPASSWD_FILE = path.join(DATA_DIR, 'mcb_users');   // nginx auth_basic 账号文件（data/ 下，前后端共用）
+function apr1Salt() {
+  const chars = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  let s = '';
+  for (let i = 0; i < 8; i++) s += chars[crypto.randomBytes(1)[0] % chars.length];
+  return s;
+}
+function apr1Hash(password, salt) {
+  salt = String(salt).slice(0, 8);
+  const md5 = data => crypto.createHash('md5').update(data).digest();
+  const pw = Buffer.from(String(password), 'utf8');
+  const ctx = crypto.createHash('md5');
+  ctx.update(pw); ctx.update('$apr1$'); ctx.update(salt);
+  let ctx1 = md5(Buffer.concat([pw, Buffer.from(salt), pw]));
+  let i = pw.length;
+  while (i > 0) {
+    ctx.update(i > 16 ? ctx1 : ctx1.subarray(0, i));
+    i -= 16;
+  }
+  const zero = Buffer.alloc(1);
+  for (i = pw.length; i > 0; i >>= 1) {
+    if (i & 1) ctx.update(zero); else ctx.update(pw.subarray(0, 1));
+  }
+  let fin = ctx.digest();
+  for (i = 0; i < 1000; i++) {
+    const c = crypto.createHash('md5');
+    if (i & 1) c.update(pw); else c.update(fin);
+    if (i % 3) c.update(salt);
+    if (i % 7) c.update(pw);
+    if (i & 1) c.update(fin); else c.update(pw);
+    fin = c.digest();
+  }  const B64T = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  const to64 = (v, n) => { let s = ''; while (--n >= 0) { s += B64T[v & 0x3f]; v >>= 6; } return s; };
+  let out = '';
+  out += to64((fin[0] << 16) | (fin[6] << 8) | fin[12], 4);
+  out += to64((fin[1] << 16) | (fin[7] << 8) | fin[13], 4);
+  out += to64((fin[2] << 16) | (fin[8] << 8) | fin[14], 4);
+  out += to64((fin[3] << 16) | (fin[9] << 8) | fin[15], 4);
+  out += to64((fin[4] << 16) | (fin[10] << 8) | fin[5], 4);
+  out += to64(fin[11], 2);
+  return '$apr1$' + salt + '$' + out;
+}
+function apr1Verify(password, hash) {
+  const m = String(hash).trim().match(/^\$apr1\$([^$]+)\$(.+)$/);
+  if (!m) return false;
+  return safeEqual(apr1Hash(password, m[1]), '$apr1$' + m[1] + '$' + m[2]);
+}
+
 // 读请求体，超限直接 413 并返回 null（调用方据此终止）
 function readBody(req, res, limit) {
   return new Promise(resolve => {
@@ -377,6 +426,61 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/me') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ user: currentUser }));
+      return;
+    }
+
+    // API：POST /api/changepwd → 当前登录用户自助修改密码（多用户模式，写回 nginx htpasswd 文件）
+    if (req.method === 'POST' && url === '/api/changepwd') {
+      if (!MULTIUSER || !currentUser) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: { message: '当前未启用多用户模式' } }));
+        return;
+      }
+      if (!isJsonContentType(req)) {
+        res.writeHead(415, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Content-Type 需为 application/json' } }));
+        return;
+      }
+      const body = await readBody(req, res, 4096);
+      if (body === null) return;
+      let reqData;
+      try { reqData = JSON.parse(String(body)); } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: { message: '请求体不是合法 JSON' } }));
+        return;
+      }
+      const oldPassword = String((reqData && reqData.oldPassword) || '');
+      const newPassword = String((reqData && reqData.newPassword) || '');
+      if (newPassword.length < 8 || newPassword.length > 64) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: { message: '新密码长度需为 8-64 位' } }));
+        return;
+      }
+      // 校验+改写在同一写队列内完成，防并发交错
+      let failMsg = '';
+      await enqueueWrite(() => {
+        let content;
+        try { content = fs.readFileSync(HTPASSWD_FILE, 'utf-8'); } catch (e) {
+          failMsg = '密码文件不存在（服务器未配置账号文件）';
+          return;
+        }
+        const lines = content.split('\n');
+        const idx = lines.findIndex(l => l.startsWith(currentUser + ':'));
+        if (idx < 0) { failMsg = '账号不在密码文件中，请联系管理员'; return; }
+        const hash = lines[idx].slice(currentUser.length + 1).trim();
+        if (!apr1Verify(oldPassword, hash)) { failMsg = '当前密码不正确'; return; }
+        lines[idx] = currentUser + ':' + apr1Hash(newPassword, apr1Salt());
+        atomicWrite(HTPASSWD_FILE, lines.join('\n'));
+      });
+      if (failMsg) {
+        auditLog(currentUser, 'deny', 'changepwd: ' + failMsg);
+        res.writeHead(failMsg === '当前密码不正确' ? 403 : 400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: { message: failMsg } }));
+        return;
+      }
+      auditLog(currentUser, 'changepwd', '');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 

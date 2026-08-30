@@ -123,6 +123,49 @@ function showConfirm({ title, desc, danger = false, okText, onOk }) {
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
 }
+
+// ===== 修改密码（多用户模式：当前登录用户自助改 nginx htpasswd 密码）=====
+function openChangePwd() {
+  document.getElementById('modalContent').innerHTML = `
+    <h3>修改登录密码</h3>
+    <p class="confirm-text">当前账号：${document.getElementById('currentUser').textContent.replace('👤 ', '')}</p>
+    <div class="form-group"><label>当前密码</label><input type="password" id="pwdOld" autocomplete="current-password"></div>
+    <div class="form-group"><label>新密码（至少 8 位）</label><input type="password" id="pwdNew" autocomplete="new-password"></div>
+    <div class="form-group"><label>确认新密码</label><input type="password" id="pwdNew2" autocomplete="new-password"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">取消</button>
+      <button class="btn-save" onclick="submitChangePwd()">确认修改</button>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('active');
+  document.getElementById('pwdOld').focus();
+}
+
+async function submitChangePwd() {
+  const oldPassword = document.getElementById('pwdOld').value;
+  const newPassword = document.getElementById('pwdNew').value;
+  const new2 = document.getElementById('pwdNew2').value;
+  if (!oldPassword) { showToast('请输入当前密码'); return; }
+  if (newPassword.length < 8) { showToast('新密码至少 8 位'); return; }
+  if (newPassword.length > 64) { showToast('新密码最长 64 位'); return; }
+  if (newPassword !== new2) { showToast('两次输入的新密码不一致'); return; }
+  try {
+    const r = await fetch('/api/changepwd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword, newPassword })
+    });
+    if (r.ok) {
+      closeModal();
+      showToast('密码已修改，浏览器再次要求登录时请使用新密码');
+    } else {
+      let msg = '修改失败';
+      try { const j = await r.json(); if (j && j.error && j.error.message) msg = j.error.message; } catch (e) {}
+      showToast(msg);
+    }
+  } catch (e) {
+    showToast('网络错误，修改失败');
+  }
+}
 // 弹窗退出方式：仅「取消」按钮或键盘ESC；点击空白处不关闭
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeModal();

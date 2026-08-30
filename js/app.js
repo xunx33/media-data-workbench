@@ -77,7 +77,10 @@ function checkWeeklyReminder() {
   // 当前登录用户（多用户模式由 nginx 注入 X-Remote-User，单用户模式返回空则不显示）
   fetch('/api/me').then(r => r.json()).then(m => {
     const el = document.getElementById('currentUser');
+    const pwdBtn = document.getElementById('chgPwdBtn');
     if (el && m && m.user) { el.textContent = '👤 ' + m.user; el.style.display = ''; }
+    // 多用户模式才有"修改密码"入口（单用户无账号文件）
+    if (pwdBtn) pwdBtn.style.display = (m && m.user) ? '' : 'none';
   }).catch(() => {});
   // 启动时同步分区 UI（多用户/工作台逻辑已简化为仅短视频工作台 + AI 页）
   render();
