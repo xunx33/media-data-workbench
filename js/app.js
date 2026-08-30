@@ -88,8 +88,8 @@ function checkWeeklyReminder() {
   checkSampleDataVersion();
 })();
 
-// ===== PWA：注册 Service Worker（本地 localhost 或 https 才支持安装）=====
-if ('serviceWorker' in navigator) {
+// ===== PWA：注册 Service Worker（仅 HTTPS/localhost 安全上下文；HTTP 下浏览器不支持，跳过以免刷报错）=====
+if ('serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
       .then(reg => reg.update())  // 启动立刻检查 SW 版本，配合 sw.js 的 CACHE 升档让用户刷新就能拿到新 CSS
