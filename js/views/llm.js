@@ -485,7 +485,7 @@ async function runOverviewAiReview() {
   const ws = 'video';   // AI 数据分析专家仅针对视频平台
   const out = document.getElementById('overviewAiOutput');
   const cfg = llmConfig || {};
-  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+  if (!cfg.baseUrl || !(cfg.apiKey || cfg.hasKey) || !cfg.model) {
     if (out) out.innerHTML = '<div class="llm-error">尚未配置大模型，请先在上方填写并保存。</div>';
     return;
   }
