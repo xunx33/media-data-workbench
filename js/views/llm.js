@@ -392,19 +392,20 @@ function buildOverviewReviewData(range) {
       const key = s.platform + '|' + String(s.accountRef || '');
       (accGroups[key] = accGroups[key] || { platform: s.platform, ref: s.accountRef, items: [] }).items.push(s);
     });
-    push('【账号登记数据】格式：平台|账号|最新记录日期|发布|粉丝|播放|点赞|评论|分享|对比变化（最早→最新，每账号保留最新3条快照）');
+    push('【账号登记数据】格式：平台|账号|最新记录日期|发布|粉丝|播放|点赞|评论|分享|对比变化（上一次→最新，每账号保留最新3条快照）');
     Object.keys(accGroups).sort().forEach(key => {
       const g = accGroups[key];
       g.items.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-      const first = g.items[0], latest = g.items[g.items.length - 1];
+      const latest = g.items[g.items.length - 1];
+      const prev = g.items.length >= 2 ? g.items[g.items.length - 2] : null;
       const rec = g.ref ? accountIds.find(x => String(x.id) === String(g.ref)) : null;
       const label = rec && rec.accountId ? rec.accountId : '未指定账号';
       const note = rec && rec.note ? '（' + rec.note + '）' : '';
-      const delta = k => { const d = (Number(latest[k]) || 0) - (Number(first[k]) || 0); return d > 0 ? '+' + d : String(d); };
+      const delta = k => { if (!prev) return '无上期'; const d = (Number(latest[k]) || 0) - (Number(prev[k]) || 0); return d > 0 ? '+' + d : String(d); };
       push('  ' + g.platform + '|' + label + note + '|' + latest.date + '|发布' + (latest.posts ?? '') +
         '|粉丝' + (latest.followers ?? '') + '|播放' + (latest.views ?? '') + '|点赞' + (latest.likes ?? '') +
         '|评论' + (latest.comments ?? '') + '|分享' + (latest.shares ?? '') +
-        '|粉丝' + delta('followers') + '、播放' + delta('views') + '、点赞' + delta('likes'));
+        '|粉丝' + delta('followers') + '、播放' + delta('views') + '、点赞' + delta('likes') + '、评论' + delta('comments') + '、分享' + delta('shares'));
     });
   }
   const vStats = stats.filter(s => inReviewRange(s.date || '', range) && isVideo(s.platform));
