@@ -372,23 +372,73 @@ function importData(event) {
     try {
       const data = JSON.parse(e.target.result);
       const picked = [];
-      // 先清空再填充：备份里缺失的字段也会被重置为空，避免旧数据残留（恢复更彻底）
-      // 字段必须是数组；非数组（损坏/手改的 JSON）统一视为空，避免把对象写入磁盘导致后续渲染崩溃
       const asArr = (v) => Array.isArray(v) ? v : [];
-      contents = asArr(data.contents);          if (data.contents) picked.push('内容' + contents.length);
-      stats = asArr(data.stats);                if (data.stats)    picked.push('视频' + stats.length);
-      reviews = asArr(data.reviews);            if (data.reviews)  picked.push('复盘' + reviews.length);
-      accountStats = asArr(data.accountStats);  if (data.accountStats) picked.push('账号数据' + accountStats.length);
-      accountIds = asArr(data.accountIds);      if (data.accountIds)   picked.push('账号ID' + accountIds.length);
       // 安全清洗：id/contentId 会拼进 onclick 的 JS 字符串上下文，统一收紧到安全字符集，
       // 防止恶意备份文件借 id 注入脚本
       const cleanId = v => String(v == null ? '' : v).replace(/[^a-zA-Z0-9_-]/g, '');
-      [contents, stats, reviews, accountStats, accountIds].forEach(arr => arr.forEach(rec => {
-        if (rec && typeof rec === 'object') {
-          if ('id' in rec) rec.id = cleanId(rec.id);
-          if ('contentId' in rec) rec.contentId = cleanId(rec.contentId);
-        }
-      }));
+      const cleanArr = arr => {
+        arr.forEach(rec => {
+          if (rec && typeof rec === 'object') {
+            if ('id' in rec) rec.id = cleanId(rec.id);
+            if ('contentId' in rec) rec.contentId = cleanId(rec.contentId);
+          }
+        });
+        return arr;
+      };
+
+      // 合并逻辑：同标题+同日期的数据，新数据替换旧数据（内容/视频/账号数据）
+      // 返回 { merged, replaced, added }
+      function mergeByKey(oldArr, newArr, keyFn) {
+        const map = new Map();
+        oldArr.forEach(r => map.set(keyFn(r), r));
+        let replaced = 0, added = 0;
+        newArr.forEach(r => {
+          const key = keyFn(r);
+          if (map.has(key)) { replaced++; } else { added++; }
+          map.set(key, r);  // 新数据覆盖旧数据
+        });
+        return { merged: Array.from(map.values()), replaced, added };
+      }
+
+      let replacedTotal = 0;
+
+      // 内容登记：标题 + 创建日期
+      if (data.contents) {
+        const imp = cleanArr(asArr(data.contents));
+        const res = mergeByKey(contents, imp, r => (r.title || '') + '|' + (r.createdAt || ''));
+        contents = res.merged;
+        if (res.replaced) replacedTotal += res.replaced;
+        picked.push('内容' + imp.length + '条' + (res.replaced ? '（替换' + res.replaced + '条重复）' : ''));
+      }
+
+      // 视频数据：标题 + 日期
+      if (data.stats) {
+        const imp = cleanArr(asArr(data.stats));
+        const res = mergeByKey(stats, imp, r => (r.title || '') + '|' + (r.date || ''));
+        stats = res.merged;
+        if (res.replaced) replacedTotal += res.replaced;
+        picked.push('视频' + imp.length + '条' + (res.replaced ? '（替换' + res.replaced + '条重复）' : ''));
+      }
+
+      // 账号数据：平台 + 账号引用 + 日期
+      if (data.accountStats) {
+        const imp = cleanArr(asArr(data.accountStats));
+        const res = mergeByKey(accountStats, imp, r => (r.platform || '') + '|' + (r.accountRef || '') + '|' + (r.date || ''));
+        accountStats = res.merged;
+        if (res.replaced) replacedTotal += res.replaced;
+        picked.push('账号数据' + imp.length + '条' + (res.replaced ? '（替换' + res.replaced + '条重复）' : ''));
+      }
+
+      // 复盘记录 / 账号ID：直接替换（这些数据通常不按标题+日期去重）
+      if (data.reviews) {
+        reviews = cleanArr(asArr(data.reviews));
+        picked.push('复盘' + reviews.length);
+      }
+      if (data.accountIds) {
+        accountIds = cleanArr(asArr(data.accountIds));
+        picked.push('账号ID' + accountIds.length);
+      }
+
       // 导入前自动快照：把当前 5 类数据整体存为 data/ 内一个快照文件，选错备份可人工回退
       try {
         const snapKey = 'import_snapshot_' + new Date().toISOString().replace(/[:.]/g, '-');
@@ -414,7 +464,8 @@ function importData(event) {
         + countCorruptRecords(accountStats, ['platform'])
         + countCorruptRecords(reviews, ['highlights', 'problems', 'plans']);
       const corruptTip = corrupt > 0 ? ' ⚠️含' + corrupt + '条乱码记录（源文件编码可能非 UTF-8）' : '';
-      showToast('已导入：' + picked.join('·') + corruptTip);
+      const replaceTip = replacedTotal > 0 ? ' 🔄已替换' + replacedTotal + '条同标题日期的旧数据' : '';
+      showToast('已导入：' + picked.join('·') + replaceTip + corruptTip);
     } catch(err) { showToast('导入失败：文件格式错误'); }
   };
   reader.readAsText(file); event.target.value = '';
