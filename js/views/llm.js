@@ -464,7 +464,7 @@ function exportAiAnalysisToHtml() {
   const monthsLabel = months > 0 ? '，账号运营' + months + '个月' : '';
   const html = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
-<title>AI视频数据分析报告_${period}_${getToday()}</title>
+<title>视频数据分析报告_${period}_${getToday()}</title>
 <style>
 body { font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif; margin: 20px; color: #1f2937; line-height: 1.5; }
 h1 { color: #1f2937; border-bottom: 3px solid #5b8cff; padding-bottom: 10px; }
@@ -472,7 +472,7 @@ h1 { color: #1f2937; border-bottom: 3px solid #5b8cff; padding-bottom: 10px; }
 pre { font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.8; }
 </style>
 </head><body>
-<h1>📊 AI 视频数据分析报告</h1>
+<h1>📊 视频数据分析报告</h1>
 <p class="meta">分析周期：${period}${monthsLabel}　|　导出时间：${new Date().toLocaleString('zh-CN')}</p>
 <pre>${escapeHtml(aiReviewReply())}</pre>
 </body></html>`;
