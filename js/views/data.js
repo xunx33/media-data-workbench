@@ -528,7 +528,7 @@ function renderAccountData() {
   // 账号选择（该平台已登记的账号；无账号时仅「未指定账号」）
   var accRecs = accountIds.filter(function(x){ return x.platform === accSelectedPlatform; });
   html += '<div class="form-row">';
-  html += '<div class="form-group"><label>账号</label><select id="accAccountRef"><option value="">未指定账号</option>';
+  html += '<div class="form-group"><label>' + accSelectedPlatform + ' 账号</label><select id="accAccountRef"><option value="">未指定账号</option>';
   accRecs.forEach(function(rec) {
     html += '<option value="' + rec.id + '">' + escapeHtml(rec.accountId || '') + (rec.note ? '（' + escapeHtml(rec.note) + '）' : '') + '</option>';
   });
